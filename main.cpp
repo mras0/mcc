@@ -7,8 +7,21 @@
 #include <vector>
 #include <optional>
 #include <map>
+#include <algorithm>
 
 #define NOT_IMPLEMENTED(stuff) do { std::ostringstream oss_; oss_ << __FILE__ << ":" << __LINE__ << ": " << __func__ << " Not implemented: " << stuff; throw std::runtime_error(oss_.str()); } while (0)
+
+// HACK
+namespace std {
+template<typename T>
+ostream& operator<<(ostream& os, const vector<T>& v) {
+    os << "{";
+    for (size_t i = 0, s = v.size(); i < s; ++i) {
+        os << (i ? ", ": " ") << v[i];
+    }
+    return os << " }";
+}
+}
 
 namespace mcc {
 
@@ -74,6 +87,10 @@ std::ostream& operator<<(std::ostream& os, const source_position& pos) {
     return os << pos.source().name() << ":" << pos.index() << "-" << pos.index()+pos.length() << "\n";
 }
 
+#define OPERATORS(X) \
+X(=)\
+
+
 enum class pp_token_type {
     whitespace,
     newline,
@@ -120,12 +137,16 @@ private:
 };
 const pp_token pp_eof_token{};
 
-std::ostream& operator<<(std::ostream& os, const pp_token& tok) {
-    return os << "pp_token{" << tok.type() << ", " << quoted(tok.text()) << "}";
+bool operator==(const pp_token& l, const pp_token& r) {
+    return l.type() == r.type() && l.text() == r.text();
 }
 
-bool is_punct_char(int ch) {
-    return strchr("_{}[]#()<>%:;.?*+-/^&|~!=,\\\"'", ch) != nullptr;
+bool operator!=(const pp_token& l, const pp_token& r) {
+    return !(l == r);
+}
+
+std::ostream& operator<<(std::ostream& os, const pp_token& tok) {
+    return os << "pp_token{" << tok.type() << ", " << quoted(tok.text()) << "}";
 }
 
 bool is_alpha(int ch) {
@@ -137,11 +158,48 @@ bool is_digit(int ch) {
 }
 
 bool is_whitespace_non_nl(int ch) {
-    return ch == ' ' || ch == 't' || ch == '\v' || ch == '\f';
+    return ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f';
 }
 
 bool is_whitespace(int ch) {
     return is_whitespace_non_nl(ch) || ch =='\n';
+}
+
+bool is_punct_char(int ch) {
+    return strchr("{}[]#()<>%:;.?*+-/^&|~!=,", ch) != nullptr;
+}
+
+size_t punct_length(std::string_view s) {
+    assert(!s.empty() && is_punct_char(s[0]));
+    if (s.length() == 1) return 1;
+    switch (s[0]) {
+    case '#': return s[0] == s[1] ? 2 : 1;
+    case '*': case '/': case '%': case '^': case '!':
+        return s[1] == '=' ? 2 : 1;
+    case '=': case '&': case '|': case '+':
+        return s[0] == s[1] || s[1] == '=' ? 2 : 1;
+    case '-':
+        return s[1] == '-' || s[1] == '=' || s[1] == '>' ? 2 : 1;
+    case '<': case '>':
+        if (s[0] == s[1]) {
+            return s.length() > 1 && s[2] == '=' ? 3 : 2;
+        } else {
+            return s[1] == '=' ? 1 : 1;
+        }
+    default: return 1;
+    }
+}
+
+std::string make_string_literal(const std::vector<pp_token>& tokens) {
+    std::string s;
+    for (const auto& t: tokens) {
+        if (t.type() == pp_token_type::whitespace) {
+            continue;
+        }
+        if (!s.empty()) s += " ";
+        s += t.text();
+    }
+    return quoted(s);
 }
 
 class pp_lexer {
@@ -198,12 +256,24 @@ public:
         } else if (is_digit(ch)) {
             type = pp_token_type::number;
             consume_while(is_digit);
+        } else if (ch == '\'' || ch == '\"') {
+            type = ch == '\'' ? pp_token_type::character_constant : pp_token_type::string_literal;
+            for (bool quote = false;; ++index_) {
+                if (index_ >= t.size()) {
+                    NOT_IMPLEMENTED("EOF in char/string literal");
+                } else if (quote) {
+                    quote = false;
+                } else if (t[index_] == '\\') {
+                    quote = true;
+                } else if (t[index_] == ch) {
+                    ++index_;
+                    break;
+                }
+            }
         } else if (is_punct_char(ch)) {
             type = pp_token_type::punctuation;
-            // TODO: Handle multi-character punctuation
-        }
-
-        if (type == pp_token_type::eof) {
+            index_ += punct_length(std::string_view{&t[index_-1], t.size()-index_+1}) - 1;
+        } else {
             NOT_IMPLEMENTED(quoted(t.substr(start_index, index_ - start_index)));
         }
         current_ = pp_token{type, t.substr(start_index, index_ - start_index)};
@@ -226,38 +296,46 @@ private:
 class pre_processor {
 public:
     explicit pre_processor(const source_file& source) : lex_{source} {
+        next();
     }
 
-    void run() {
+    const pp_token& current() const {
+        return current_;
+    }
+
+    void next() {
         for (;;) {
-            const auto& t = lex_.current();
-            if (!t) break;
-            if (t.type() == pp_token_type::punctuation && t.text() == "#") {
-                lex_.next();
+            if (!pending_tokens_.empty()) {
+                current_ = pending_tokens_.front();
+                pending_tokens_.erase(pending_tokens_.begin());
+                return;
+            }
+            current_ = lex_.current();
+            if (!current_) {
+                break;
+            }
+            lex_.next();
+            
+            if (current_.type() == pp_token_type::punctuation && current_.text() == "#") {
                 skip_whitespace();
                 handle_directive();
                 continue;
-            } else if (t.type() == pp_token_type::identifier) {
-                auto it = defines_.find(t.text());
+            } else if (current_.type() == pp_token_type::identifier) {
+                auto it = defines_.find(current_.text());
                 if (it != defines_.end()) {
-                    lex_.next();
                     pp_lex_token_stream ts{lex_};
-                    auto toks = handle_replace(ts, it->first, it->second);
-                    for (const auto& t2: toks) {
-                        if (t2.type() != pp_token_type::whitespace && t2.type() != pp_token_type::newline) {
-                            std::cout << "OUTPUT: " << t2 << "\n";
-                        }
-                    }
+                    pending_tokens_ = handle_replace(ts, it->first, it->second);
+                    assert(std::find_if(pending_tokens_.begin(), pending_tokens_.end(), [](const auto& t) {
+                        return t.type() == pp_token_type::whitespace || t.type() == pp_token_type::newline;
+                        }) == pending_tokens_.end());
                     continue;
                 }
             }
-            if (t.type() != pp_token_type::whitespace && t.type() != pp_token_type::newline) {
-                std::cout << "OUTPUT: " << t << "\n";
+            if (current_.type() != pp_token_type::whitespace && current_.type() != pp_token_type::newline) {
+                return;
             }
-            lex_.next();
         }
     }
-
 
 private:
     struct macro_definition {
@@ -265,9 +343,11 @@ private:
         std::vector<pp_token> replacement;
     };
 
-
     pp_lexer lex_;
     std::map<std::string, macro_definition> defines_;
+    std::vector<pp_token> pending_tokens_;
+    std::vector<std::string> expanding_;
+    pp_token current_;
 
     void skip_whitespace() {
         while (lex_.current() && lex_.current().type() == pp_token_type::whitespace) {
@@ -305,21 +385,27 @@ private:
             }
             lex_.next();
             std::vector<std::string> ps;
-            while (lex_.current().type() != pp_token_type::punctuation && lex_.current().text() != ")") {
-                if (lex_.current().type() == pp_token_type::whitespace) {
+            while (lex_.current().type() != pp_token_type::punctuation || lex_.current().text() != ")") {
+                skip_whitespace();
+                if (!ps.empty()) {
+                    if (lex_.current().type() != pp_token_type::punctuation || lex_.current().text() != ",") {
+                        NOT_IMPLEMENTED("Expected ',' in macro argument list");
+                    }
                     lex_.next();
-                    continue;
+                    skip_whitespace();
                 }
                 ps.push_back(get_identifer());
             }
-            lex_.next();
+            lex_.next(); // Skip ')'
             params = std::move(ps);
         }
         skip_whitespace();
 
         std::vector<pp_token> replacement_list;
         for (; lex_.current() && lex_.current().type() != pp_token_type::newline; lex_.next()) {
-            replacement_list.push_back(lex_.current());
+            if (lex_.current().type() != pp_token_type::whitespace) {
+                replacement_list.push_back(lex_.current());
+            }
         }
 
         if (defines_.find(id) != defines_.end()) {
@@ -353,11 +439,11 @@ private:
         size_t index_ = 0;
     };
 
-    std::vector<pp_token> do_replace(const std::vector<pp_token>& replacement, const std::string& macro_id) {
+    std::vector<pp_token> do_replace(const std::vector<pp_token>& replacement) {
         vec_token_stream tsr{replacement};
         std::vector<pp_token> res;
         while (tsr.current()) {
-            if (tsr.current().type() == pp_token_type::identifier && tsr.current().text() != macro_id) {
+            if (tsr.current().type() == pp_token_type::identifier && std::find(expanding_.begin(), expanding_.end(), tsr.current().text()) == expanding_.end()) {
                 auto it = defines_.find(tsr.current().text());
                 if (it != defines_.end()) {
                     tsr.next();
@@ -373,14 +459,16 @@ private:
     }
 
     std::vector<pp_token> handle_replace(token_stream& ts, const std::string& macro_id, const macro_definition& def) {
+
+        std::vector<pp_token> replacement;
         if (def.params) {
             // Function-like macro
             skip_whitespace();
             if (ts.current().type() != pp_token_type::punctuation || ts.current().text() != "(") {
-                NOT_IMPLEMENTED("Expected '(' after function-like macro name");
+                // Not an invocation
+                return { pp_token{ pp_token_type::identifier, macro_id } };
             }
             ts.next();
-            // TODO: Skip matching parenthesis
             std::vector<std::vector<pp_token>> args;
             std::vector<pp_token> current_arg;
 
@@ -389,12 +477,10 @@ private:
                 if (t.type() == pp_token_type::punctuation) {
                     if (t.text() == "(") {
                         ++nest;
-                        continue;
                     } else if (t.text() == ")") {
                         if (--nest == 0) {
                             break;
                         }
-                        continue;
                     } else if (t.text() == ",") {
                         args.push_back(std::move(current_arg));
                         current_arg.clear();
@@ -412,34 +498,91 @@ private:
             ts.next();
 
             if (args.size() != def.params->size()) {
-                NOT_IMPLEMENTED("Invalid number of arguments to macro got " << args.size() << " expecting " << def.params->size());
+                NOT_IMPLEMENTED("Invalid number of arguments to macro got " << args.size() << " expecting " << def.params->size() << " for macro " << macro_id);
             }
 
-            std::vector<pp_token> replacement;
+            // Expand any macros in the arugment list
+            // Note: Before restricting expansion of macro_id
+            for (auto& a: args) {
+                a = do_replace(a);
+            }
+
+            enum { combine_none, combine_str, combine_paste } combine_state = combine_none;
             for (size_t ri = 0, rs = def.replacement.size(); ri < rs; ++ri) {
                 const auto& t = def.replacement[ri];
-                if (t.type() == pp_token_type::identifier) {
+
+                if (t.type() == pp_token_type::punctuation) {
+                    if (t.text() == "#") {
+                        combine_state = combine_str;
+                        continue;
+                    } else if (t.text() == "##") {
+                        if (combine_state != combine_none) {
+                            NOT_IMPLEMENTED("# and ## in same expression");
+                        }
+                        if (ri == 0) {
+                            NOT_IMPLEMENTED("## may not appear at the start of the replacement list");
+                        }
+                        combine_state = combine_paste;
+                        continue;
+                    }
+                } else if (t.type() == pp_token_type::identifier) {
                     auto it = std::find(def.params->begin(), def.params->end(), t.text());
                     if (it != def.params->end()) {
                         const auto ai = std::distance(def.params->begin(), it);
-                        replacement.insert(replacement.end(), args[ai].begin(), args[ai].end());
+                        auto nts = args[ai];
+                        if (combine_state == combine_str) {
+                            nts = { pp_token{pp_token_type::string_literal, make_string_literal(nts)} };
+                            combine_state = combine_none;
+                        } else if (combine_state != combine_none) {
+                            assert(!replacement.empty() && !nts.empty());
+                            auto last = replacement.back();
+                            replacement.back() = pp_token{ last.type(), last.text() + nts.front().text() };
+                            nts.erase(nts.begin());
+                            combine_state = combine_none;
+                        }
+                        replacement.insert(replacement.end(), nts.begin(), nts.end());
                         continue;
                     }
                 }
+                if (combine_state == combine_paste) {
+                    assert(!replacement.empty());
+                    auto last = replacement.back();
+                    replacement.back() = pp_token{ last.type(), last.text() + t.text() };
+                    combine_state = combine_none;
+                    continue;
+                }
+
+                if (combine_state != combine_none) {
+                    NOT_IMPLEMENTED("Unused #/## in macro replacement list for " << macro_id << " before " << t);
+                }
+                combine_state = combine_none;
                 replacement.push_back(t);
             }
-
-            return do_replace(replacement, macro_id);
+            if (combine_state != combine_none) {
+                NOT_IMPLEMENTED("Unused #/## in macro replacement list for " << macro_id);
+            }
         } else {
-            return do_replace(def.replacement, macro_id);
+            replacement = def.replacement;
         }
+        struct push_expanding {
+            explicit push_expanding(pre_processor& pp, const std::string& val) : pp{pp} {
+                pp.expanding_.push_back(val);
+            }
+            ~push_expanding() {
+                pp.expanding_.pop_back();
+            }
+            pre_processor& pp;
+        } pe{*this, macro_id};
+        return do_replace(replacement);
     }
 };
 
 } // namespace mcc
 
+using namespace mcc;
+
 auto make_source() {
-    return mcc::source_file{"test.c",
+    return source_file{"test.c",
 R"(
 #define A 2
 #define B ((A)+1)
@@ -454,16 +597,78 @@ DSDS
 */
 #define F(X) X+X
 F(E) // 42 +42
+
+#define G(A) #A
+G(2 + 3) // "2 + 3"
+
+#define H(A,B) A##B, 3 ## 4
+H(1,2) // 12, 34
+H (x,y) // xy, 34
+(H)(1,2) // (H)(1,2)
 )"
 };
 }
 
+#define PP_NUM(n)   pp_token{pp_token_type::number, #n}
+#define PP_PUNCT(p) pp_token{pp_token_type::punctuation, p}
+#define PP_STR(s)   pp_token{pp_token_type::string_literal, s}
+#define PP_ID(id)   pp_token{pp_token_type::identifier, #id}
+
+void test_pre_processor() {
+    const struct {
+        const char* text;
+        std::vector<pp_token> expected;
+    } test_cases[] = {
+        { "2 \n + 3  \t\v\f\n", { PP_NUM(2), PP_PUNCT("+"), PP_NUM(3) } },
+        { R"(#define A 2
+#define B ((A)+1)
+#define X A + B
+X // 2 + ((2)+1)
+)",  { PP_NUM(2), PP_PUNCT("+"), PP_PUNCT("("), PP_PUNCT("("), PP_NUM(2), PP_PUNCT(")"), PP_PUNCT("+"), PP_NUM(1), PP_PUNCT(")"), } },
+
+        // Example from https://gcc.gnu.org/onlinedocs/cpp/Self-Referential-Macros.html
+        { "#define x (4 + y)\n#define y (2 * x)\nx y", {
+            PP_PUNCT("("), PP_NUM(4), PP_PUNCT("+"), PP_PUNCT("("), PP_NUM(2), PP_PUNCT("*"), PP_ID(x), PP_PUNCT(")"), PP_PUNCT(")"), 
+            PP_PUNCT("("), PP_NUM(2), PP_PUNCT("*"), PP_PUNCT("("), PP_NUM(4), PP_PUNCT("+"), PP_ID(y), PP_PUNCT(")"), PP_PUNCT(")"), 
+        } },
+        { "#define X(a) a\n#define Y X(2)\nY", {
+            PP_NUM(2)
+        } },
+        { "#define twice(x) 2*(x)\ntwice(twice(1))\n", {
+            PP_NUM(2), PP_PUNCT("*"), PP_PUNCT("("), PP_NUM(2), PP_PUNCT("*"), PP_PUNCT("("), PP_NUM(1), PP_PUNCT(")"), PP_PUNCT(")")
+        } } ,
+
+    };
+
+    for (const auto& t: test_cases) {
+        try {
+            const source_file source{"test", t.text};
+            pre_processor pp{source};
+            std::vector<pp_token> res;
+            for (pp_token tok; !!(tok = pp.current()); pp.next()) {
+                res.push_back(tok);
+            }
+            if (res != t.expected) {
+                std::ostringstream oss;
+                oss << "Got\n" << res << "\nExpecting\n" << t.expected;
+                throw std::runtime_error(oss.str());
+            }
+        } catch (...) {
+            const char* delim = "-----------------------------------\n";
+            std::cout << "Failure while processing\n" << delim << t.text << "\n" << delim << "\n";
+            throw;
+        }
+    }
+}
+
+#undef PP_NUM
+#undef PP_PUNCT
+#undef PP_STR
+#undef PP_ID
+
 int main() {
-    using namespace mcc;
     try {
-        const auto source = make_source();        
-        pre_processor pp{source};
-        pp.run();
+        test_pre_processor();
     } catch (const std::exception& e) {
         std::cerr << e.what() << "\n";
         return 1;
