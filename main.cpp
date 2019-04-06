@@ -215,68 +215,84 @@ public:
     // TODO: Handle line continuations
     void next() {
         const auto& t = source_.text();
-        const auto start_index = index_;
-        if (start_index >= t.size()) {
-            // EOF
-            current_ = pp_token{};
-            return;
-        }
 
-        const auto ch = static_cast<uint8_t>(t[index_++]);
-        pp_token_type type = pp_token_type::eof;
-        if (ch == '/' && index_ < t.size() && (t[index_] == '/' || t[index_] == '*')) {
-            type = pp_token_type::whitespace;
-            const bool line_comment = t[index_] == '/';
-            ++index_;
-            for (bool has_star = false;; ++index_) {
-                if (index_ >= t.size()) {
-                    NOT_IMPLEMENTED("EOF in comment");
-                }
-                if (line_comment) {
-                    if (t[index_] == '\n') break;
-                } else {
-                    if (!has_star && t[index_] == '*') {
-                        has_star = true;
-                    } else if (has_star && t[index_] == '/') {
-                        ++index_;
-                        break;
+        for (;;) {
+            const auto start_index = index_;
+            if (start_index >= t.size()) {
+                // EOF
+                current_ = pp_token{};
+                return;
+            }
+
+            const auto ch = static_cast<uint8_t>(t[index_++]);
+            pp_token_type type = pp_token_type::eof;
+            if (ch == '/' && index_ < t.size() && (t[index_] == '/' || t[index_] == '*')) {
+                type = pp_token_type::whitespace;
+                const bool line_comment = t[index_] == '/';
+                ++index_;
+                for (bool has_star = false;; ++index_) {
+                    if (index_ >= t.size()) {
+                        NOT_IMPLEMENTED("EOF in comment");
+                    }
+                    if (line_comment) {
+                        if (t[index_] == '\n') break;
                     } else {
-                        has_star = false;
+                        if (!has_star && t[index_] == '*') {
+                            has_star = true;
+                        } else if (has_star && t[index_] == '/') {
+                            ++index_;
+                            break;
+                        } else {
+                            has_star = false;
+                        }
                     }
                 }
-            }
-        } else if (ch == '\n') {
-            type = pp_token_type::newline;
-        } else if (is_whitespace_non_nl(ch)) {
-            type = pp_token_type::whitespace;
-            consume_while(is_whitespace_non_nl);
-        } else if (is_alpha(ch) || ch == '_') {
-            type = pp_token_type::identifier;
-            consume_while([](int ch) { return is_alpha(ch) || is_digit(ch) || ch == '_'; });
-        } else if (is_digit(ch)) {
-            type = pp_token_type::number;
-            consume_while(is_digit);
-        } else if (ch == '\'' || ch == '\"') {
-            type = ch == '\'' ? pp_token_type::character_constant : pp_token_type::string_literal;
-            for (bool quote = false;; ++index_) {
-                if (index_ >= t.size()) {
-                    NOT_IMPLEMENTED("EOF in char/string literal");
-                } else if (quote) {
-                    quote = false;
-                } else if (t[index_] == '\\') {
-                    quote = true;
-                } else if (t[index_] == ch) {
+            } else if (ch == '\\') {
+                // Handle line-continuation
+                if (index_ >= t.size()) NOT_IMPLEMENTED("backslash at en of file");
+                if (t[index_] == '\n') {
                     ++index_;
-                    break;
+                    continue;
                 }
+                if (t[index_] == '\r' && index_+1 < t.size() && t[index_+1] == '\n') {
+                    index_ += 2;
+                    continue;
+                }
+                NOT_IMPLEMENTED(quoted(t.substr(start_index, index_ - start_index)));
+            } else if (ch == '\n') {
+                type = pp_token_type::newline;
+            } else if (is_whitespace_non_nl(ch)) {
+                type = pp_token_type::whitespace;
+                consume_while(is_whitespace_non_nl);
+            } else if (is_alpha(ch) || ch == '_') {
+                type = pp_token_type::identifier;
+                consume_while([](int ch) { return is_alpha(ch) || is_digit(ch) || ch == '_'; });
+            } else if (is_digit(ch)) {
+                type = pp_token_type::number;
+                consume_while(is_digit);
+            } else if (ch == '\'' || ch == '\"') {
+                type = ch == '\'' ? pp_token_type::character_constant : pp_token_type::string_literal;
+                for (bool quote = false;; ++index_) {
+                    if (index_ >= t.size()) {
+                        NOT_IMPLEMENTED("EOF in char/string literal");
+                    } else if (quote) {
+                        quote = false;
+                    } else if (t[index_] == '\\') {
+                        quote = true;
+                    } else if (t[index_] == ch) {
+                        ++index_;
+                        break;
+                    }
+                }
+            } else if (is_punct_char(ch)) {
+                type = pp_token_type::punctuation;
+                index_ += punct_length(std::string_view{&t[index_-1], t.size()-index_+1}) - 1;
+            } else {
+                NOT_IMPLEMENTED(quoted(t.substr(start_index, index_ - start_index)));
             }
-        } else if (is_punct_char(ch)) {
-            type = pp_token_type::punctuation;
-            index_ += punct_length(std::string_view{&t[index_-1], t.size()-index_+1}) - 1;
-        } else {
-            NOT_IMPLEMENTED(quoted(t.substr(start_index, index_ - start_index)));
+            current_ = pp_token{type, t.substr(start_index, index_ - start_index)};
+            break;
         }
-        current_ = pp_token{type, t.substr(start_index, index_ - start_index)};
     }
 
 private:
@@ -325,9 +341,9 @@ public:
                 if (it != defines_.end()) {
                     pp_lex_token_stream ts{lex_};
                     pending_tokens_ = handle_replace(ts, it->first, it->second);
-                    assert(std::find_if(pending_tokens_.begin(), pending_tokens_.end(), [](const auto& t) {
+                    pending_tokens_.erase(std::remove_if(pending_tokens_.begin(), pending_tokens_.end(), [](const auto& t) {
                         return t.type() == pp_token_type::whitespace || t.type() == pp_token_type::newline;
-                        }) == pending_tokens_.end());
+                        }), pending_tokens_.end());
                     continue;
                 }
             }
@@ -418,6 +434,12 @@ private:
     struct token_stream {
         virtual void next() = 0;
         virtual const pp_token& current() const = 0;
+
+        void skip_whitespace() {
+            while (current() && (current().type() == pp_token_type::whitespace || current().type() == pp_token_type::newline)) {
+                next();
+            }
+        }
     };
 
     struct pp_lex_token_stream : token_stream {        
@@ -439,7 +461,28 @@ private:
         size_t index_ = 0;
     };
 
-    std::vector<pp_token> do_replace(const std::vector<pp_token>& replacement) {
+    struct combined_token_stream : token_stream {        
+        explicit combined_token_stream(token_stream& first, token_stream& second) : first_{first}, second_{second}, first_exhausted_{!first_.current()} {
+        }
+        void next() override {
+            if (first_exhausted_) {
+                second_.next();
+            } else {
+                first_.next();
+                if (!first_.current()) {
+                    first_exhausted_ = true;
+                }
+            }
+        }
+        const pp_token& current() const override { return first_exhausted_ ? second_.current() : first_.current(); }
+    private:
+        token_stream& first_;
+        token_stream& second_;
+        bool first_exhausted_;
+    };
+
+    std::vector<pp_token> do_replace(const std::vector<pp_token>& replacement, token_stream& cont_stream) {
+        std::cout << "Replacing in " << replacement << "\n";
         vec_token_stream tsr{replacement};
         std::vector<pp_token> res;
         while (tsr.current()) {
@@ -447,7 +490,8 @@ private:
                 auto it = defines_.find(tsr.current().text());
                 if (it != defines_.end()) {
                     tsr.next();
-                    auto r = handle_replace(tsr, it->first, it->second);
+                    combined_token_stream cs{tsr, cont_stream};
+                    auto r = handle_replace(cs, it->first, it->second);
                     res.insert(res.end(), r.begin(), r.end());
                     continue;
                 }
@@ -455,42 +499,44 @@ private:
             res.push_back(tsr.current());
             tsr.next();
         }
+        std::cout << " --> " << res << "\n";
         return res;
     }
 
     std::vector<pp_token> handle_replace(token_stream& ts, const std::string& macro_id, const macro_definition& def) {
-
+        std::cout << "Expanding " << macro_id << "\n";
         std::vector<pp_token> replacement;
         if (def.params) {
             // Function-like macro
-            skip_whitespace();
+            ts.skip_whitespace();
             if (ts.current().type() != pp_token_type::punctuation || ts.current().text() != "(") {
                 // Not an invocation
                 return { pp_token{ pp_token_type::identifier, macro_id } };
             }
             ts.next();
+
             std::vector<std::vector<pp_token>> args;
             std::vector<pp_token> current_arg;
-
             for (int nest = 1; ts.current(); ts.next()) {
+                ts.skip_whitespace();
                 const auto& t = ts.current();
                 if (t.type() == pp_token_type::punctuation) {
                     if (t.text() == "(") {
                         ++nest;
                     } else if (t.text() == ")") {
                         if (--nest == 0) {
+                            if (!def.params->empty()) {
+                                args.push_back(std::move(current_arg));
+                            }
                             break;
                         }
-                    } else if (t.text() == ",") {
+                    } else if (nest == 1 && t.text() == ",") {
                         args.push_back(std::move(current_arg));
                         current_arg.clear();
                         continue;
                     }
                 }
                 current_arg.push_back(t);
-            }
-            if (!current_arg.empty()) {
-                args.push_back(std::move(current_arg));
             }
             if (ts.current().type() != pp_token_type::punctuation || ts.current().text() != ")") {
                 NOT_IMPLEMENTED("Expected ')' after function-like macro");
@@ -499,12 +545,6 @@ private:
 
             if (args.size() != def.params->size()) {
                 NOT_IMPLEMENTED("Invalid number of arguments to macro got " << args.size() << " expecting " << def.params->size() << " for macro " << macro_id);
-            }
-
-            // Expand any macros in the arugment list
-            // Note: Before restricting expansion of macro_id
-            for (auto& a: args) {
-                a = do_replace(a);
             }
 
             enum { combine_none, combine_str, combine_paste } combine_state = combine_none;
@@ -539,6 +579,11 @@ private:
                             replacement.back() = pp_token{ last.type(), last.text() + nts.front().text() };
                             nts.erase(nts.begin());
                             combine_state = combine_none;
+                        } else {
+                            // Expand macros in argument now that we know it's not being stringified/combined
+                            // (note: before restricting expansion of "macro_id")
+                            vec_token_stream extra_tokens{{}};
+                            nts = do_replace(nts, extra_tokens);
                         }
                         replacement.insert(replacement.end(), nts.begin(), nts.end());
                         continue;
@@ -573,7 +618,7 @@ private:
             }
             pre_processor& pp;
         } pe{*this, macro_id};
-        return do_replace(replacement);
+        return do_replace(replacement, ts);
     }
 };
 
@@ -611,10 +656,20 @@ H (x,y) // xy, 34
 
 #define PP_NUM(n)   pp_token{pp_token_type::number, #n}
 #define PP_PUNCT(p) pp_token{pp_token_type::punctuation, p}
-#define PP_STR(s)   pp_token{pp_token_type::string_literal, s}
+#define PP_STR(s)   pp_token{pp_token_type::string_literal, #s}
 #define PP_ID(id)   pp_token{pp_token_type::identifier, #id}
 
 void test_pre_processor() {
+    auto do_pp = [](const std::string& text) {
+            const source_file source{"test", text};
+            pre_processor pp{source};
+            std::vector<pp_token> res;
+            for (pp_token tok; !!(tok = pp.current()); pp.next()) {
+                res.push_back(tok);
+            }
+            return res;
+    };
+
     const struct {
         const char* text;
         std::vector<pp_token> expected;
@@ -638,23 +693,59 @@ X // 2 + ((2)+1)
             PP_NUM(2), PP_PUNCT("*"), PP_PUNCT("("), PP_NUM(2), PP_PUNCT("*"), PP_PUNCT("("), PP_NUM(1), PP_PUNCT(")"), PP_PUNCT(")")
         } } ,
 
+        // Examples from https://gcc.gnu.org/onlinedocs/cpp/Macro-Arguments.html
+        { "#define min(X, Y)  ((X) < (Y) ? (X) : (Y))\nmin (min (a, b), c)", do_pp("((((a) < (b) ? (a) : (b))) < (c) ? (((a) < (b) ? (a) : (b))) : (c))") },
+        { "#define min(X, Y)  ((X) < (Y) ? (X) : (Y))\nmin(, b)\n",     do_pp("((   ) < (b) ? (   ) : (b))") },
+        { "#define min(X, Y)  ((X) < (Y) ? (X) : (Y))\nmin(a, )\n",     do_pp("((a  ) < ( ) ? (a  ) : ( ))") },
+        { "#define min(X, Y)  ((X) < (Y) ? (X) : (Y))\nmin(,)\n",       do_pp("((   ) < ( ) ? (   ) : ( ))") },
+        { "#define min(X, Y)  ((X) < (Y) ? (X) : (Y))\nmin((,),)\n",    do_pp("(((,)) < ( ) ? ((,)) : ( ))") },
+        { "#define foo(x) x, \"x\"\nfoo(bar)", do_pp("bar, \"x\"")},
+        // Examples from https://gcc.gnu.org/onlinedocs/cpp/Stringizing.html
+        { "#define xstr(s) str(s)\n#define str(s) #s\n#define foo 4\nstr(foo)", { PP_STR("foo") } },
+        { "#define xstr(s) str(s)\n#define str(s) #s\n#define foo 4\nxstr(foo)", { PP_STR("4") } },
+        // Paste
+        { "#define X(a) a ## _bar\nX(foo)" , { PP_ID(foo_bar) }},
+        { "#define X(a) a ## 1\nX(foo)"    , { PP_ID(foo1) }},
+        { "#define M(a) x ## a ## 1\nM(x)" , { PP_ID(xx1) }},
+        { "#define P(a,b) a##b\nP(1 , 2)"  , { PP_NUM(12) } },
+        { "#define X(n) {n}\n#define Y(n) X(n), X(n)\nY(foo)", do_pp("{foo}, {foo}") },
+        { R"(
+#define DEF(id, str) id,
+#define DEF_BWL(x) \
+ DEF(TOK_ASM_ ## x ## b, #x "b") \
+ DEF(TOK_ASM_ ## x ## w, #x "w") \
+ DEF(TOK_ASM_ ## x ## l, #x "l") \
+ DEF(TOK_ASM_ ## x, #x)
+# define DEF_BWLX DEF_BWL
+ DEF_BWLX(mov)
+        )", { do_pp("TOK_ASM_movb,TOK_ASM_movw,TOK_ASM_movl,TOK_ASM_mov,") } },
+        { R"(
+#define hash_hash # ## #
+#define mkstr(a) # a
+#define in_between(a) mkstr(a)
+#define join(c, d) in_between(c hash_hash d)
+char p[] = join(x, y);
+        )", { do_pp("char p[] = \"x ## y\";") } },
+
     };
 
     for (const auto& t: test_cases) {
+        const char* delim = "-----------------------------------\n";
         try {
-            const source_file source{"test", t.text};
-            pre_processor pp{source};
-            std::vector<pp_token> res;
-            for (pp_token tok; !!(tok = pp.current()); pp.next()) {
-                res.push_back(tok);
-            }
+            const auto res = do_pp(t.text);
             if (res != t.expected) {
                 std::ostringstream oss;
-                oss << "Got\n" << res << "\nExpecting\n" << t.expected;
+                oss << "Got\n" << res << "\nExpecting\n" << t.expected << "\n" << delim;
+                for (const auto& t2: res) {
+                    oss << t2.text() << " ";
+                }
+                oss << "\n" << delim;
+                for (const auto& t2: t.expected) {
+                    oss << t2.text() << " ";
+                }
                 throw std::runtime_error(oss.str());
             }
         } catch (...) {
-            const char* delim = "-----------------------------------\n";
             std::cout << "Failure while processing\n" << delim << t.text << "\n" << delim << "\n";
             throw;
         }
