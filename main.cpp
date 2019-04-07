@@ -8,6 +8,9 @@
 #include <optional>
 #include <map>
 #include <algorithm>
+#include <fstream>
+#include <streambuf>
+#include <memory>
 
 #define NOT_IMPLEMENTED(stuff) do { std::ostringstream oss_; oss_ << __FILE__ << ":" << __LINE__ << ": " << __func__ << " Not implemented: " << stuff; throw std::runtime_error(oss_.str()); } while (0)
 
@@ -70,7 +73,7 @@ private:
 class source_position {
 public:
     explicit source_position(const source_file& source, size_t index, size_t len) : source_{&source}, index_{index}, len_{len} {
-        assert(len < source_->text().size() && index + len < source_->text().size());
+        assert(len < source_->text().size() && index + len <= source_->text().size());
     }
 
     const source_file& source() const { return *source_; }
@@ -84,12 +87,97 @@ private:
 };
 
 std::ostream& operator<<(std::ostream& os, const source_position& pos) {
-    return os << pos.source().name() << ":" << pos.index() << "-" << pos.index()+pos.length() << "\n";
+    int line = 1;
+    size_t last_line = 0;
+    const auto& t = pos.source().text();
+    for (size_t i = 0; i < pos.index(); ++i) {
+        if (t[i] == '\n') {
+            ++line;
+            last_line = i;
+        }
+    }
+    return os << pos.source().name() << ":" << line << ":" << pos.index()-last_line << "-" << pos.index()+pos.length()-last_line;
 }
 
-#define OPERATORS(X) \
-X(=)\
+std::string read_file(const std::string& p) {
+    std::ifstream in{p};
+    if (!in) NOT_IMPLEMENTED("Could not open " << p);
+    return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+}
 
+std::string normalize_filename(const std::string_view f) {
+    std::string cpy{f};
+#ifdef WIN32
+    for (auto& ch: cpy) {
+        if (ch == '\\') {
+            ch = '/';
+        } else if (ch >= 'A' && ch <= 'Z') {
+            ch |= 0x20;
+        }
+    }
+#endif
+    return cpy;
+}
+
+class source_manager {
+public:
+    explicit source_manager() {}
+
+    void define_standard_headers(const std::string& name, const std::string& contents) {
+        standard_headers_.push_back(std::make_unique<source_file>(name, contents));
+    }
+
+    std::string_view base_name(const std::string& fn) {
+        if (fn.compare(0, base_dir_.size(), base_dir_) == 0) {
+            return std::string_view{fn.c_str() + base_dir_.size()};
+        }
+        return fn;
+    }
+
+    // TODO: Load relative to file if using "..."
+    // TODO: Search include path
+    const source_file& include(const std::string& included_from, const std::string_view filename) {
+        assert(filename.size() >= 2 && (filename[0] == '"' || filename[0] == '<'));
+        auto fn = std::string{filename.substr(1, filename.size()-2)};
+        for (const auto& h: standard_headers_) {
+            if (h->name() == fn) {
+                return *h;
+            }
+        }
+        assert(normalize_filename(included_from) == included_from);
+        const auto idx = included_from.find_last_of('/');
+        if (idx != std::string::npos) {
+            fn = included_from.substr(0, idx+1) + fn;
+        } else {
+            fn = base_dir_ + fn;
+        }
+        return load(fn);
+    }
+
+    const source_file& load(const std::string_view filename) {
+        auto fn = normalize_filename(filename);
+        for (const auto& f: files_) {
+            if (f->name() == fn) {
+                return *f;
+            }
+        }
+        //std::cout << "Loading " << fn << "\n";
+        auto content = read_file(fn);
+        if (files_.empty()) {
+            const auto idx = fn.find_last_of('/');
+            if (idx != std::string::npos) {
+                base_dir_ = fn.substr(0, idx+1);
+            }
+        }
+        files_.push_back(std::make_unique<source_file>(std::move(fn), std::move(content)));
+        return *files_.back();
+    }
+
+private:
+    std::vector<std::unique_ptr<source_file>> files_;
+    std::vector<std::unique_ptr<source_file>> standard_headers_;
+    std::string base_dir_;
+};
 
 enum class pp_token_type {
     whitespace,
@@ -130,7 +218,7 @@ public:
     explicit operator bool() const { return type_ != pp_token_type::eof; }
 
     pp_token_type type() const { return type_; }
-    const std::string text() const { return text_; }
+    const std::string& text() const { return text_; }
 private:
     pp_token_type type_;
     std::string   text_;
@@ -155,6 +243,10 @@ bool is_alpha(int ch) {
 
 bool is_digit(int ch) {
     return ch >= '0' && ch <= '9';
+}
+
+bool is_xdigit(int ch) {
+    return is_digit(ch) || (ch >= 'A' && ch <= 'F') || (ch >= 'a' && ch <= 'f');
 }
 
 bool is_whitespace_non_nl(int ch) {
@@ -203,6 +295,87 @@ std::string make_string_literal(const std::vector<pp_token>& tokens) {
     return quoted(s);
 }
 
+class pp_number {
+public:
+    explicit pp_number() : val_{0}, signed_{true} {}
+    explicit pp_number(intmax_t val): val_{static_cast<uintmax_t>(val)}, signed_{true} {}
+    explicit pp_number(uintmax_t val): val_{val}, signed_{false} {}
+
+    bool is_signed() const { return signed_; }
+    intmax_t val() const { return static_cast<intmax_t>(val_); }
+    uintmax_t uval() const { return val_; }
+
+private:
+    uintmax_t val_;
+    bool signed_;
+};
+
+std::ostream& operator<<(std::ostream& os, pp_number n) {
+    if (n.is_signed()) {
+        return os << n.val();
+    } else {
+        return os << n.uval();
+    }
+}
+
+int operator_precedence(const std::string& op) {
+    if (op == "*" || op == "/" || op == "%") {
+        return 5;
+    } else if (op == "+" || op == "-") {
+        return 6;
+    } else if (op == "<<" || op == ">>") {
+        return 7;
+    } else if (op == "<" || op == "<=" || op == ">=" || op == ">") {
+        return 9;
+    } else if (op == "==" || op == "!=") {
+        return 10;
+    } else if (op == "&") {
+        return 11;
+    } else if (op == "^") {
+        return 12;
+    } else if (op == "|") {
+        return 13;
+    } else if (op == "&&") {
+        return 14;
+    } else if (op == "||") {
+        return 15;
+    }
+    return INT_MAX;
+}
+
+pp_number pp_compute(const std::string& op, pp_number l, pp_number r) {
+    const bool is_signed = l.is_signed() && r.is_signed();
+#define DO_OP(o) if (op == #o) { uintmax_t tmp = l.uval() o r.uval(); return is_signed?pp_number{static_cast<intmax_t>(tmp)}:pp_number{tmp}; }
+    DO_OP(*);DO_OP(/);DO_OP(%);
+    DO_OP(+);DO_OP(-);
+    DO_OP(<<);DO_OP(>>);
+    DO_OP(<);DO_OP(<=);DO_OP(>=);DO_OP(>);
+    DO_OP(==);DO_OP(!=);
+    DO_OP(&);
+    DO_OP(^);
+    DO_OP(|);
+    DO_OP(&&);
+    DO_OP(||);
+#undef DO_OP
+
+    NOT_IMPLEMENTED(l << op << r);
+}
+
+enum class conditional_state {
+    active,  // Currently in active #if/#elif/#else block
+    waiting, // Currently inactive, waiting for first active block
+    done,    // Has been active, waiting for #endif
+    endif,   // Passed #else, only #endif legal
+};
+
+std::ostream& operator<<(std::ostream& os, conditional_state s) {
+    if (s == conditional_state::active)  return os << "active";
+    if (s == conditional_state::waiting) return os << "waiting";
+    if (s == conditional_state::done)    return os << "done";
+    if (s == conditional_state::endif)   return os << "endif";
+    NOT_IMPLEMENTED((int)s);
+}
+
 class pp_lexer {
 public:
     explicit pp_lexer(const source_file& source) : source_{source} {
@@ -211,15 +384,24 @@ public:
     pp_lexer(const pp_lexer&) = delete;
     pp_lexer& operator=(const pp_lexer&) = delete;
 
+    const source_file& source() const { return source_; }
+
+    source_position position() const { return source_position{source_, last_index_, current_.text().size()}; }
+
     const pp_token& current() const { return current_; }
 
-    // TODO: Handle line continuations
     void next() {
         const auto& t = source_.text();
+        last_index_ = index_;
 
         for (;;) {
             const auto start_index = index_;
             if (start_index >= t.size()) {
+                if (current_ && current_.type() != pp_token_type::newline) {
+                    // If the file didn't end with a newline, insert one
+                    current_ = pp_token{pp_token_type::newline, "\n"};
+                    return;
+                }
                 // EOF
                 current_ = pp_token{};
                 return;
@@ -239,7 +421,7 @@ public:
                     if (line_comment) {
                         if (t[index_] == '\n') break;
                     } else {
-                        if (!has_star && t[index_] == '*') {
+                        if (t[index_] == '*') {
                             has_star = true;
                         } else if (has_star && t[index_] == '/') {
                             ++index_;
@@ -272,15 +454,54 @@ public:
             } else if (is_digit(ch) || (ch == '.' && is_digit(next))) {
                 type = pp_token_type::number;
                // TOOD: Match more correctly
-                for (uint8_t last = ch; index_ < t.size(); ++index_) {
-                    const uint8_t here = static_cast<uint8_t>(t[index_]);
-                    if (is_digit(here) || here == '.' || here == 'e') {
-                    } else if (last == 'e' && (here == '+' || here == '-')) {
-                    } else if (here == 'u' || here == 'U' || here == 'l' || here == 'L') {
-                    } else {
-                        break;
+
+                bool integral = true;
+                const bool hex = (next|0x20) == 'x';
+                if (ch == '0' && (hex || is_digit(next))) {
+                    if (hex) ++index_;
+                    for (; index_ < t.size(); ++index_) {
+                        const auto here = static_cast<uint8_t>(t[index_]);
+                        if (!is_digit(here) && (!hex || !is_xdigit(here))) {
+                            break;
+                        }
                     }
-                    last = here;
+                } else {
+                    bool has_dot = ch == '.';
+                    bool has_exp = false;
+                    for (auto last = ch; index_ < t.size(); ++index_) {
+                        const auto here = static_cast<uint8_t>(t[index_]);
+                        if (is_digit(here)) {
+                        } else if (here == '.') {
+                            if (has_dot) {
+                                NOT_IMPLEMENTED("Invalid number");
+                            }
+                            has_dot = true;
+                        } else if ((here|0x20) == 'e') {
+                            if (has_exp) {
+                                NOT_IMPLEMENTED("Invalid number");
+                            }
+                            has_exp = true;
+                        } else if (here == '+' || here == '-') {
+                            if ((last|0x20) != 'e') {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                        last = here;
+                    }
+                    if (has_dot || has_exp) {
+                        integral = false;
+                    }
+                }
+
+                if (integral) {
+                    for (; index_ < t.size(); ++index_) {
+                        const auto here = static_cast<uint8_t>(t[index_] | 0x20);
+                        if (here != 'u' && here != 'l') {
+                            break;
+                        }
+                    }
                 }
             } else if (ch == '\'' || ch == '\"') {
                 type = ch == '\'' ? pp_token_type::character_constant : pp_token_type::string_literal;
@@ -307,10 +528,45 @@ public:
         }
     }
 
+    std::string get_filename() {
+        const auto& t = source_.text();
+        std::string res;
+        int state_char = -1;
+        for (;; ++index_) {
+            if (index_ >= t.size()) {
+                NOT_IMPLEMENTED("EOF while scanning filename for #include directive");
+            }
+
+            const auto ch = static_cast<uint8_t>(t[index_]);
+            if (ch == '\n') {
+                NOT_IMPLEMENTED("newline while scanning filename for #include directive");
+            } else if (state_char < 0) {
+                if (is_whitespace(ch)) {
+                    continue;
+                } else if (ch == '"') {
+                    state_char = '"';
+                } else if (ch == '<') {
+                    state_char = '>';
+                } else {
+                    NOT_IMPLEMENTED("Unexpected character while scanning for filename in #include directive: " << ch);
+                }
+                res += ch;
+            } else {
+                res += ch;
+                if (ch == state_char) {
+                    ++index_;
+                    break;
+                }
+            }
+        }
+        return res;
+    }
+
 private:
     const source_file& source_;
     pp_token current_;
     size_t index_ = 0;
+    size_t last_index_ = 0;
 
     template<typename Pred>
     void consume_while(Pred pred) {
@@ -321,10 +577,21 @@ private:
     }
 };
 
+#define EXPECT_PUNCT(punct) do { if (current_.type() != pp_token_type::punctuation || current_.text() != punct) { NOT_IMPLEMENTED("Expected '" << punct << "' got " << current_); } internal_next(); } while (0)
+
 class pre_processor {
 public:
-    explicit pre_processor(const source_file& source) : lex_{source} {
+    explicit pre_processor(source_manager& sm, const source_file& source) : sm_{sm} {
+        files_.push_back(std::make_unique<pp_lexer>(source));
         next();
+    }
+
+    std::vector<source_position> position() const {
+        std::vector<source_position> p;
+        for (auto it = files_.crbegin(); it != files_.crend(); ++it) {
+            p.push_back((*it)->position());
+        }
+        return p;
     }
 
     const pp_token& current() const {
@@ -333,33 +600,40 @@ public:
 
     void next() {
         for (;;) {
-            if (!pending_tokens_.empty()) {
-                current_ = pending_tokens_.front();
-                pending_tokens_.erase(pending_tokens_.begin());
-                return;
-            }
-            current_ = lex_.current();
-            if (!current_) {
-                break;
-            }
-            lex_.next();
-            
-            if (current_.type() == pp_token_type::punctuation && current_.text() == "#") {
-                skip_whitespace();
-                handle_directive();
-                continue;
-            } else if (current_.type() == pp_token_type::identifier) {
-                auto it = defines_.find(current_.text());
-                if (it != defines_.end()) {
-                    pp_lex_token_stream ts{lex_};
-                    pending_tokens_ = handle_replace(ts, it->first, it->second);
-                    pending_tokens_.erase(std::remove_if(pending_tokens_.begin(), pending_tokens_.end(), [](const auto& t) {
-                        return t.type() == pp_token_type::whitespace || t.type() == pp_token_type::newline;
-                        }), pending_tokens_.end());
+            if (internal_next()) {
+                if (!current_) {
+                    if (!conds_.empty()) {
+                        NOT_IMPLEMENTED("Open #if/#ifdef block!");
+                    }
+                    if (files_.size() != 1) {
+                        NOT_IMPLEMENTED("Multiple files open?");
+                    }
+                    return;
+                }                
+            } else {            
+                if (current_.type() == pp_token_type::punctuation && current_.text() == "#") {
+                    internal_next();
+                    skip_whitespace();
+                    handle_directive();
                     continue;
                 }
+
+                if (!is_cond_active()) {
+                    continue;
+                }
+            
+                if (current_.type() == pp_token_type::identifier) {
+                    auto it = defines_.find(current_.text());
+                    if (it != defines_.end()) {
+                        internal_next();
+                        replace_to_pending(*it);
+                        continue;
+                    }
+                }
             }
+
             if (current_.type() != pp_token_type::whitespace && current_.type() != pp_token_type::newline) {
+                assert(current_);
                 return;
             }
         }
@@ -370,67 +644,181 @@ private:
         std::optional<std::vector<std::string>> params;
         std::vector<pp_token> replacement;
     };
+    struct conditional {
+        conditional_state current;
+        conditional_state next;
+    };
     static constexpr const char* const variadic_arg_name = "__VA_ARGS__";
 
-    pp_lexer lex_;
+    source_manager& sm_;
     std::map<std::string, macro_definition> defines_;
     std::vector<pp_token> pending_tokens_;
     std::vector<std::string> expanding_;
+    std::vector<conditional> conds_;
+    std::vector<std::unique_ptr<pp_lexer>> files_;
     pp_token current_;
 
+    using define_type = decltype(*defines_.begin());
+
+    bool is_cond_active() const {
+        return conds_.empty() || conds_.back().current == conditional_state::active;
+    }
+
+    bool internal_next() {
+        assert(!files_.empty());
+        if (!pending_tokens_.empty()) {
+            current_ = pending_tokens_.front();
+            pending_tokens_.erase(pending_tokens_.begin());
+            assert(current_);
+            return true;
+        }
+        for (;;) {
+            current_ = files_.back()->current();
+            if (!current_) {
+                if (files_.size() == 1) {
+                    return true;
+                }
+                //std::cout << "Exiting " << files_.back()->source().name() << "\n";
+                files_.pop_back();
+                continue;
+            }
+            //std::cout << files_.back()->position() << ": " << current_ << "\n";
+            files_.back()->next();
+            return false;
+        }
+    }
+
+    void replace_to_pending(define_type def) {
+        assert(pending_tokens_.empty());
+        pp_token_stream ts{*this};
+        pending_tokens_ = handle_replace(ts, def.first, def.second);
+        if (current_) {
+            pending_tokens_.push_back(current_);
+        }
+    }
+
     void skip_whitespace() {
-        while (lex_.current() && lex_.current().type() == pp_token_type::whitespace) {
-            lex_.next();
+        while (current_.type() == pp_token_type::whitespace) {
+            internal_next();
         }
     }
 
     std::string get_identifer() {
-        const auto& t = lex_.current();
-        if (t.type() != pp_token_type::identifier) {
-            NOT_IMPLEMENTED("Expected identifier got " << t);
+        if (current_.type() != pp_token_type::identifier) {
+            NOT_IMPLEMENTED("Expected identifier got " << current_);
         }
-        const auto text = lex_.current().text();
-        lex_.next();
+        const auto text = current_.text();
+        internal_next();
         return text;
     }
 
-    void handle_directive() {
-        // TODO: Support null directive
-        const auto dir = get_identifer();
-        skip_whitespace();
-        if (dir == "define") {
-            handle_define();
-        } else {
-            NOT_IMPLEMENTED("#" + dir);
+    std::vector<pp_token> read_to_newline() {
+        std::vector<pp_token> res;
+        for (; current_ && current_.type() != pp_token_type::newline; internal_next()) {
+            if (current_.type() != pp_token_type::whitespace) {
+                res.push_back(current_);
+            }
         }
+        return res;
+    }
+
+    void handle_directive() {
+        if (current_.type() != pp_token_type::identifier) {
+            // TODO: Support null directive
+            NOT_IMPLEMENTED("Expected identifier after # got " << current_);
+        }
+        const std::string dir = current_.text();
+        std::string include_next;
+        if (dir == "include") {
+            if (!is_cond_active()) {
+                (void)read_to_newline();
+            } else {
+                include_next = handle_include();
+            }
+        } else {
+            internal_next();
+            skip_whitespace();
+            if (dir == "define") {
+                if (!is_cond_active()) {
+                    (void)read_to_newline();
+                    return;
+                }
+                handle_define();
+            } else if (dir == "undef") {
+                if (!is_cond_active()) {
+                    (void)read_to_newline();
+                    return;
+                }
+                handle_undef();
+            } else if (dir == "pragma") {
+                (void)read_to_newline();
+            } else if (dir == "error") {
+                auto text = read_to_newline();
+                if (is_cond_active()) {
+                    NOT_IMPLEMENTED("#error " << text);
+                }
+            } else if (dir == "if") {
+                handle_if();
+            } else if (dir == "ifdef") {
+                handle_ifdef();
+            } else if (dir == "ifndef") {
+                handle_ifndef();
+            } else if (dir == "elif") {
+                handle_elif();
+            } else if (dir == "else") {
+                handle_else();
+            } else if (dir == "endif") {
+                handle_endif();
+            } else {
+                if (is_cond_active()) {
+                    NOT_IMPLEMENTED("#" << dir);
+                }
+                (void)read_to_newline();
+            }
+        }
+        skip_whitespace();
+        if (current_.type() != pp_token_type::newline) {
+            NOT_IMPLEMENTED("Expected newline after #" << dir << " got " << current_);
+        }
+        if (!include_next.empty()) {
+            assert(pending_tokens_.empty());
+            assert(is_cond_active());
+            files_.push_back(std::make_unique<pp_lexer>(sm_.include(files_.back()->source().name(), include_next)));
+            //std::cout << "Entering " << files_.back()->source().name() << "\n";
+        }
+    }
+
+    std::string handle_include() {
+        assert(!files_.empty());
+        const auto filename = files_.back()->get_filename();
+        internal_next();
+        assert(filename.size() >= 2);
+        return filename;
     }
 
     void handle_define() {
         const auto id = get_identifer();
         std::optional<std::vector<std::string>> params;
-        if (lex_.current().type() == pp_token_type::punctuation) {
-            if (lex_.current().text() != "(") {
-                NOT_IMPLEMENTED("Unexpected " << lex_.current() << " in macro definition");
+        if (current_.type() == pp_token_type::punctuation) {
+            if (current_.text() != "(") {
+                NOT_IMPLEMENTED("Unexpected " << current_ << " in macro definition");
             }
-            lex_.next();
+            internal_next();
             std::vector<std::string> ps;
             bool is_variadic = false;
-            while (lex_.current().type() != pp_token_type::punctuation || lex_.current().text() != ")") {
+            while (current_.type() != pp_token_type::punctuation || current_.text() != ")") {
                 if (is_variadic) {
                     NOT_IMPLEMENTED("Ellipsis may only appear as last argument name");
                 }
                 skip_whitespace();
                 if (!ps.empty()) {
-                    if (lex_.current().type() != pp_token_type::punctuation || lex_.current().text() != ",") {
-                        NOT_IMPLEMENTED("Expected ',' in macro argument list");
-                    }
-                    lex_.next();
+                    EXPECT_PUNCT(",");
                     skip_whitespace();
                 }
-                if (lex_.current().type() == pp_token_type::punctuation && lex_.current().text() == "...") {
+                if (current_.type() == pp_token_type::punctuation && current_.text() == "...") {
                     ps.push_back(variadic_arg_name);
                     is_variadic = true;
-                    lex_.next();
+                    internal_next();
                     skip_whitespace();
                 } else {
                     ps.push_back(get_identifer());
@@ -440,23 +828,132 @@ private:
                     // TODO: Check for duplicate argument names...
                 }
             }
-            lex_.next(); // Skip ')'
+            internal_next(); // Skip ')'
             params = std::move(ps);
         }
-        skip_whitespace();
 
-        std::vector<pp_token> replacement_list;
-        for (; lex_.current() && lex_.current().type() != pp_token_type::newline; lex_.next()) {
-            if (lex_.current().type() != pp_token_type::whitespace) {
-                replacement_list.push_back(lex_.current());
+        std::vector<pp_token> replacement = read_to_newline();
+
+        auto it = defines_.find(id);
+        if (it != defines_.end()) {
+            if (it->second.params == params && it->second.replacement == replacement) {
+                return;
             }
+            NOT_IMPLEMENTED("Invalid redefinition of macro " << id << " as " << replacement << " previous " << it->second.replacement);
         }
 
-        if (defines_.find(id) != defines_.end()) {
-            NOT_IMPLEMENTED("Redefinition of macro " << id);
-        }
+        defines_[id] = macro_definition{params, replacement};
+    }
 
-        defines_[id] = macro_definition{params, replacement_list};
+    void handle_undef() {
+        const auto id = get_identifer();
+        auto it = defines_.find(id);
+        if (it != defines_.end()) {
+            defines_.erase(it);
+        }      
+    }
+    
+    void new_cond() {
+        if (is_cond_active()) {
+            conds_.push_back(conditional{conditional_state::waiting,conditional_state::waiting});
+        } else {
+            conds_.push_back(conditional{conditional_state::done,conditional_state::done});
+        }
+    }
+
+    void activate_conditional(conditional_state next = conditional_state::done) {
+        assert(!conds_.empty() && conds_.back().current == conditional_state::waiting);
+        conds_.back().current = conditional_state::active;
+        conds_.back().next = next;
+        //std::cout << std::string(2*conds_.size(), ' ') << " Cond is active\n";
+    }
+
+    void handle_if_defined(bool non_inverted) {
+        skip_whitespace();
+        const bool activate = (defines_.find(get_identifer()) != defines_.end()) == non_inverted && is_cond_active();
+        new_cond();
+        if (activate) {
+            activate_conditional();
+        }
+    }
+
+    void handle_if() {
+        //std::cout << std::string(2*conds_.size(), ' ') << "#if\n";
+        const bool activate = eval_cond() && is_cond_active();
+        new_cond();
+        if (activate) {
+            activate_conditional();
+        }
+    }
+
+    void handle_ifdef() {
+        //std::cout << std::string(2*conds_.size(), ' ') << "#ifdef " << current_.text() << "\n";
+        handle_if_defined(true);
+    }
+
+    void handle_ifndef() {
+        //std::cout << std::string(2*conds_.size(), ' ') << "#ifndef " << current_.text() << "\n";
+        handle_if_defined(false);
+    }
+
+    void handle_elif() {
+        //std::cout << std::string(2*conds_.size()-2, ' ') << "#elif\n";
+        if (conds_.empty()) {
+            NOT_IMPLEMENTED("#else outside #if/#ifdef");
+        }
+        const auto res = eval_cond();
+        conds_.back().current = conds_.back().next;
+        switch (conds_.back().current) {
+        case conditional_state::active:
+            // Not legal
+            break;
+        case conditional_state::waiting:
+            if (res) { 
+                activate_conditional();
+            }
+            return;
+        case conditional_state::done:
+            // Skip this block as well
+            return;
+        case conditional_state::endif:
+            // Not legal, we've already passed an #else
+            break;
+        }
+        NOT_IMPLEMENTED("#elif with " << conds_.back().current);
+    }
+
+    void handle_else() {
+        //std::cout << std::string(2*conds_.size()-2, ' ') << "#else\n";
+        if (conds_.empty()) {
+            NOT_IMPLEMENTED("#else outside #if/#ifdef");
+        }
+        conds_.back().current = conds_.back().next;
+        switch (conds_.back().current) {
+        case conditional_state::active:
+            // Not legal
+            break;
+        case conditional_state::waiting:
+            // Activate block
+            activate_conditional(conditional_state::endif);
+            conds_.back().current = conditional_state::active;
+            return;
+        case conditional_state::done:
+            // Skip this block as well
+            conds_.back().next = conditional_state::endif;
+            return;
+        case conditional_state::endif:
+            // Not legal, we've already passed an #else
+            break;
+        }
+        NOT_IMPLEMENTED("#else with " << conds_.back().current);
+    }
+
+    void handle_endif() {
+        if (conds_.empty()) {
+            NOT_IMPLEMENTED("#endif outside #if/#ifdef");
+        }
+        conds_.pop_back();
+        //std::cout << std::string(2*conds_.size(), ' ') << "#endif\n";
     }
 
     struct token_stream {
@@ -470,13 +967,13 @@ private:
         }
     };
 
-    struct pp_lex_token_stream : token_stream {        
-        explicit pp_lex_token_stream(pp_lexer& lex) : lex_{lex} {
+    struct pp_token_stream : token_stream {        
+        explicit pp_token_stream(pre_processor& pp) : pp_{pp} {
         }
-        void next() override { lex_.next(); }
-        const pp_token& current() const override { return lex_.current(); }
+        void next() override { pp_.internal_next(); }
+        const pp_token& current() const override { return pp_.current_; }
     private:
-        pp_lexer& lex_;
+        pre_processor& pp_;
     };
 
     struct vec_token_stream : token_stream {
@@ -487,6 +984,12 @@ private:
     private:
         const std::vector<pp_token>& v_;
         size_t index_ = 0;
+    };
+
+    struct null_token_stream : token_stream {
+        explicit null_token_stream() {};
+        void next() override { NOT_IMPLEMENTED("null_token_stream::next()"); }
+        const pp_token& current() const override { return pp_eof_token; }
     };
 
     struct combined_token_stream : token_stream {        
@@ -510,7 +1013,6 @@ private:
     };
 
     std::vector<pp_token> do_replace(const std::vector<pp_token>& replacement, token_stream& cont_stream) {
-        std::cout << "Replacing in " << replacement << "\n";
         vec_token_stream tsr{replacement};
         std::vector<pp_token> res;
         while (tsr.current()) {
@@ -527,12 +1029,10 @@ private:
             res.push_back(tsr.current());
             tsr.next();
         }
-        std::cout << " --> " << res << "\n";
         return res;
     }
 
     std::vector<pp_token> handle_replace(token_stream& ts, const std::string& macro_id, const macro_definition& def) {
-        std::cout << "Expanding " << macro_id << "\n";
         std::vector<pp_token> replacement;
         if (def.params) {
             // Function-like macro
@@ -616,16 +1116,16 @@ private:
                         if (combine_state == combine_str) {
                             nts = { pp_token{pp_token_type::string_literal, make_string_literal(nts)} };
                         } else if (combine_state == combine_paste) {
-                            assert(!replacement.empty() && !nts.empty());
-                            auto last = replacement.back();
-                            replacement.back() = pp_token{ last.type(), last.text() + nts.front().text() };
-                            std::cout << "paste '" << last.text() << "' and '" << nts.front().text() << "'\n";
-                            nts.erase(nts.begin());
+                            if (!replacement.empty() && !nts.empty()) {
+                                auto last = replacement.back();
+                                replacement.back() = pp_token{ last.type(), last.text() + nts.front().text() };
+                                nts.erase(nts.begin());
+                            }
                         } else {
                             // Expand macros in argument now that we know it's not being combined/stringified
                             // (note: before restricting expansion of "macro_id")
-                            vec_token_stream extra_tokens{{}};
-                            nts = do_replace(nts, extra_tokens);
+                            null_token_stream null_ts{};
+                            nts = do_replace(nts, null_ts);
                         }
                         combine_state = combine_none;
                         replacement.insert(replacement.end(), nts.begin(), nts.end());
@@ -633,17 +1133,16 @@ private:
                     }
                 }
                 if (combine_state == combine_paste) {
-                    assert(!replacement.empty());
-                    auto last = replacement.back();
-                    replacement.back() = pp_token{ last.type(), last.text() + t.text() };
                     combine_state = combine_none;
-                    continue;
+                    if (!replacement.empty()) {
+                        auto last = replacement.back();
+                        replacement.back() = pp_token{ last.type(), last.text() + t.text() };
+                        continue;
+                    }
                 }
-
                 if (combine_state != combine_none) {
                     NOT_IMPLEMENTED("Unused #/## in macro replacement list for " << macro_id << " before " << t);
                 }
-                combine_state = combine_none;
                 replacement.push_back(t);
             }
             if (combine_state != combine_none) {
@@ -675,7 +1174,117 @@ private:
         } pe{*this, macro_id};
         return do_replace(replacement, ts);
     }
+
+    pp_number eval_primary() {
+        skip_whitespace();
+        const auto t = current_;
+        if (!t) NOT_IMPLEMENTED("Unexpected EOF");
+        internal_next();
+        if (t.type() == pp_token_type::punctuation) {
+            if (t.text() == "(") {
+                auto res = eval_expr();
+                EXPECT_PUNCT(")");                
+                return res;
+            }
+        } else if (t.type() == pp_token_type::number) {
+            const auto nt = t.text().c_str();
+            char* end = nullptr; 
+            errno = 0;
+            const auto n = strtoull(nt, &end, 0);
+            if (!end || *end || (n == ULLONG_MAX && errno == ERANGE)) {
+                NOT_IMPLEMENTED("Invalid PP number '" << nt << "'");
+            }
+            return n > LLONG_MAX ? pp_number{n} : pp_number{static_cast<intmax_t>(n)};
+        } else if (t.type() == pp_token_type::identifier) {
+            if (t.text() == "defined") {
+                skip_whitespace();
+                std::string id;
+                if (current_.type() == pp_token_type::identifier) {
+                    id = current_.text();
+                    internal_next();
+                } else {
+                    EXPECT_PUNCT("(");
+                    skip_whitespace();
+                    id = get_identifer();
+                    skip_whitespace();
+                    EXPECT_PUNCT(")");
+                }
+                return pp_number{defines_.find(id) != defines_.end() ? 1ULL : 0ULL};
+            }
+            auto it = defines_.find(t.text());
+            if (it != defines_.end()) {
+                replace_to_pending(*it);
+                internal_next();
+                return eval_primary();
+            }
+            return pp_number{0LL};
+        }
+        NOT_IMPLEMENTED(t);
+    }
+
+    pp_number eval_unary() {
+        skip_whitespace();
+        if (current_.type() == pp_token_type::punctuation) {
+            const auto op = current_.text();
+            if (op == "!") {
+                internal_next();
+                return pp_number{eval_primary().uval() ? 0LL : 1LL};
+            } else if (op == "~" || op == "+" || op == "-") {
+                NOT_IMPLEMENTED(op);
+            }
+        }
+        return eval_primary();
+    }
+
+    pp_number eval_expr1(pp_number lhs, int outer_precedence) {
+        for (;;) {
+            skip_whitespace();
+            if (current_.type() != pp_token_type::punctuation) {
+                break;
+            }
+            const auto op = current_.text();
+            if (op == "?") {
+                internal_next();
+                skip_whitespace();
+                const auto l = eval_expr();
+                skip_whitespace();
+                EXPECT_PUNCT(":");
+                skip_whitespace();
+                const auto r = eval_expr();
+                return lhs.uval() ? l : r; // TODO: Only actually evaluate (or give error) if branch is taken
+            }
+            const int precedence = operator_precedence(op);
+            if (precedence > outer_precedence) {
+                break;
+            }
+            internal_next();
+            auto rhs = eval_unary();
+            for (;;) {
+                skip_whitespace();
+                if (current_.type() != pp_token_type::punctuation) {
+                    break;
+                }
+                const auto look_ahead_precedence = operator_precedence(current_.text());
+                if (look_ahead_precedence > precedence) {
+                    break;
+                }
+                rhs = eval_expr1(rhs, look_ahead_precedence);
+            }
+            lhs = pp_compute(op, lhs, rhs);
+        }
+        return lhs;
+    }
+
+    pp_number eval_expr() {
+        return eval_expr1(eval_unary(), 100);
+    }
+
+    bool eval_cond() {
+        return eval_expr().uval() != 0;
+    }
 };
+
+#undef EXPECT_PUNCT
 
 } // namespace mcc
 
@@ -717,7 +1326,8 @@ H (x,y) // xy, 34
 void test_pre_processor() {
     auto do_pp = [](const std::string& text) {
             const source_file source{"test", text};
-            pre_processor pp{source};
+            source_manager sm;
+            pre_processor pp{sm, source};
             std::vector<pp_token> res;
             for (pp_token tok; !!(tok = pp.current()); pp.next()) {
                 res.push_back(tok);
@@ -729,6 +1339,8 @@ void test_pre_processor() {
         const char* text;
         std::vector<pp_token> expected;
     } test_cases[] = {
+        { "//10\n42" , { PP_NUM(42) } },
+        { "/*****/42\n/*****/" , { PP_NUM(42) } },
         { "2 \n + 3  \t\v\f\n", { PP_NUM(2), PP_PUNCT("+"), PP_NUM(3) } },
         { R"(#define A 2
 #define B ((A)+1)
@@ -840,15 +1452,39 @@ IS_PAREN(xxx) // Expands to 0
 )",     { PP_NUM(1), PP_NUM(0), PP_NUM(1), PP_NUM(0) } },
 
     { "#define X 42\n#define Y (X+X)\n#if Y == 84\n1\n#else\n0\n#endif\n", {PP_NUM(1)}},
-    { "#define X 1\n#if defined(X)\n42\n#endif", {PP_NUM(32)}},
+    { "#if X\n42\n#else\n60\n#endif\n", {PP_NUM(60)}},
+    { "#define X 1\n#if defined(X)\n42\n#endif", {PP_NUM(42)}},
+    { "#define X\n#ifdef X\n1\n#endif\n#ifdef Y\n2\n#endif\n#ifndef Y\n3\n#endif", {PP_NUM(1),PP_NUM(3)}},
     { "#if X\n42\n#endif", {}},
     { "#if 0x2A==42\n1\n#endif", {PP_NUM(1)}},
     { "#if 2==(1?2:3)\n1\n#endif", {PP_NUM(1)}},
+    { "#define Y 42\n#if X\n#elif Y\n50\n#else\n2\n#endif", {PP_NUM(50)}},
+    { R"(
+#if 0
+    000
+    #if 1
+        111
+    #elif 1
+        222
+    #endif
+#elif 0
+    333
+#elif 1
+    #if 0
+        444
+    #else
+        123
+    #endif
+#else
+    666
+#endif
+)", { PP_NUM(123) }},
 
+    { "#define BLAH(pf,sf) pf ## cc ## sf\nBLAH(,s)\nBLAH(p,)\n", {PP_ID(ccs), PP_ID(pcc)}},
     };
 
+    const char* delim = "-----------------------------------\n";
     for (const auto& t: test_cases) {
-        const char* delim = "-----------------------------------\n";
         try {
             const auto res = do_pp(t.text);
             if (res != t.expected) {
@@ -875,9 +1511,71 @@ IS_PAREN(xxx) // Expands to 0
 #undef PP_STR
 #undef PP_ID
 
-int main() {
+void define_standard_headers(source_manager& sm) {
+    sm.define_standard_headers("assert.h", "");
+    sm.define_standard_headers("complex.h", "");
+    sm.define_standard_headers("ctype.h", "");
+    sm.define_standard_headers("errno.h", "");
+    sm.define_standard_headers("fenv.h", "");
+    sm.define_standard_headers("float.h", "");
+    sm.define_standard_headers("inttypes.h", "");
+    sm.define_standard_headers("iso646.h", "");
+    sm.define_standard_headers("limits.h", "");
+    sm.define_standard_headers("locale.h", "");
+    sm.define_standard_headers("math.h", "");
+    sm.define_standard_headers("setjmp.h", "");
+    sm.define_standard_headers("signal.h", "");
+    sm.define_standard_headers("stdalign.h", "");
+    sm.define_standard_headers("stdarg.h", "");
+    sm.define_standard_headers("stdatomic.h", "");
+    sm.define_standard_headers("stdbool.h", "");
+    sm.define_standard_headers("stddef.h", "");
+    sm.define_standard_headers("stdint.h", "");
+    sm.define_standard_headers("stdio.h", "");
+    sm.define_standard_headers("stdlib.h", "");
+    sm.define_standard_headers("stdnoreturn.h", "");
+    sm.define_standard_headers("string.h", "");
+    sm.define_standard_headers("tgmath.h", "");
+    sm.define_standard_headers("threads.h", "");
+    sm.define_standard_headers("time.h", "");
+    sm.define_standard_headers("uchar.h", "");
+    sm.define_standard_headers("wchar.h", "");
+    sm.define_standard_headers("wctype.h", "");
+}
+
+void define_posix_headers(source_manager& sm) {
+    sm.define_standard_headers("dlfcn.h", "");
+    sm.define_standard_headers("fcntl.h", "");
+    sm.define_standard_headers("unistd.h", "");
+    sm.define_standard_headers("sys/stat.h", "");
+    sm.define_standard_headers("sys/time.h", "");
+}
+
+int main(int argc, char* argv[]) {
     try {
-        test_pre_processor();
+        if (argc < 2) {
+            test_pre_processor();
+            return 0;
+        }
+
+        source_manager sm;
+        define_standard_headers(sm);
+        define_posix_headers(sm);
+        pre_processor pp{sm, sm.load(argv[1])};
+        std::vector<pp_token> res;
+        try {
+            for (pp_token tok; !!(tok = pp.current()); pp.next()) {
+                std::cout << ">>" << tok << "\n";
+            }
+        } catch (...) {
+            std::cerr << "At\n";
+            for (const auto& p : pp.position()) {
+                std::cerr << p << "\n";
+            }
+            std::cerr << "\n";
+            throw;
+        }
+
     } catch (const std::exception& e) {
         std::cerr << e.what() << "\n";
         return 1;
