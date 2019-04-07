@@ -370,6 +370,7 @@ private:
         std::optional<std::vector<std::string>> params;
         std::vector<pp_token> replacement;
     };
+    static constexpr const char* const variadic_arg_name = "__VA_ARGS__";
 
     pp_lexer lex_;
     std::map<std::string, macro_definition> defines_;
@@ -413,7 +414,11 @@ private:
             }
             lex_.next();
             std::vector<std::string> ps;
+            bool is_variadic = false;
             while (lex_.current().type() != pp_token_type::punctuation || lex_.current().text() != ")") {
+                if (is_variadic) {
+                    NOT_IMPLEMENTED("Ellipsis may only appear as last argument name");
+                }
                 skip_whitespace();
                 if (!ps.empty()) {
                     if (lex_.current().type() != pp_token_type::punctuation || lex_.current().text() != ",") {
@@ -422,7 +427,18 @@ private:
                     lex_.next();
                     skip_whitespace();
                 }
-                ps.push_back(get_identifer());
+                if (lex_.current().type() == pp_token_type::punctuation && lex_.current().text() == "...") {
+                    ps.push_back(variadic_arg_name);
+                    is_variadic = true;
+                    lex_.next();
+                    skip_whitespace();
+                } else {
+                    ps.push_back(get_identifer());
+                    if (ps.back() == variadic_arg_name) {
+                        NOT_IMPLEMENTED(variadic_arg_name << " must not be used as argument name");
+                    }
+                    // TODO: Check for duplicate argument names...
+                }
             }
             lex_.next(); // Skip ')'
             params = std::move(ps);
@@ -527,6 +543,7 @@ private:
             }
             ts.next();
 
+            const bool is_variadic = !def.params->empty() && def.params->back() == variadic_arg_name;
             std::vector<std::vector<pp_token>> args;
             std::vector<pp_token> current_arg;
             for (int nest = 1; ts.current(); ts.next()) {
@@ -554,6 +571,19 @@ private:
                 NOT_IMPLEMENTED("Expected ')' after function-like macro");
             }
             ts.next();
+
+            if (is_variadic) {
+                const auto psize = def.params->size();
+                if (args.size() == psize - 1) {
+                    args.push_back({});
+                } else if (args.size() > psize) {
+                    for (size_t i = psize; i < args.size(); ++i) {
+                        args[psize-1].push_back(pp_token{pp_token_type::punctuation, ","});
+                        args[psize-1].insert(args[psize-1].end(), args[i].begin(), args[i].end());
+                    }
+                    args.erase(args.begin() + psize, args.end());
+                }
+            }
 
             if (args.size() != def.params->size()) {
                 NOT_IMPLEMENTED("Invalid number of arguments to macro got " << args.size() << " expecting " << def.params->size() << " for macro " << macro_id);
