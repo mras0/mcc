@@ -16,6 +16,7 @@ enum class pp_token_type {
     header_name,
     identifier,
     number,
+    float_number,
     character_constant,
     string_literal,
     punctuation,

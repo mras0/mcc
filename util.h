@@ -12,6 +12,9 @@
 namespace mcc {
 
 std::string quoted(std::string_view s);
+std::pair<unsigned, size_t> unescape_char(const std::string_view s);
+std::string unescape(const std::string_view s);
+
 }
 
 #endif

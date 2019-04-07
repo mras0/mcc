@@ -73,7 +73,6 @@ const source_file& source_manager::load(const std::string_view filename) {
             return *f;
         }
     }
-    //std::cout << "Loading " << fn << "\n";
     auto content = read_file(fn);
     if (files_.empty()) {
         const auto idx = fn.find_last_of('/');

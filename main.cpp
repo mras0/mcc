@@ -1,4 +1,5 @@
 #include <iostream>
+#include <variant>
 
 #include "util.h"
 #include "source.h"
@@ -15,6 +16,7 @@ std::ostream& operator<<(std::ostream& os, const std::vector<pp_token>& v) {
 }
 
 #define PP_NUM(n)   pp_token{pp_token_type::number, #n}
+#define PP_FNUM(n)   pp_token{pp_token_type::float_number, #n}
 #define PP_PUNCT(p) pp_token{pp_token_type::punctuation, p}
 #define PP_STR(s)   pp_token{pp_token_type::string_literal, #s}
 #define PP_ID(id)   pp_token{pp_token_type::identifier, #id}
@@ -91,9 +93,9 @@ char p[] = join(x, y);
         )", { do_pp("char p[] = \"x ## y\";") } },
 
         // Floating point numbers
-        { "42.0", {PP_NUM(42.0)}}, 
-        { "1.234", {PP_NUM(1.234)}}, 
-        { "5e-10", {PP_NUM(5e-10)}}, 
+        { "42.0", {PP_FNUM(42.0)}}, 
+        { "1.234", {PP_FNUM(1.234)}}, 
+        { "5e-10", {PP_FNUM(5e-10)}}, 
         // Suffixed numbers
         { "100ulLU", {PP_NUM(100ulLU)}},
         // Variadic macro
@@ -247,6 +249,302 @@ void define_posix_headers(source_manager& sm) {
     sm.define_standard_headers("sys/time.h", "");
 }
 
+#define TOK_KEWORDS(X) \
+    X(auto)            \
+    X(break)           \
+    X(case)            \
+    X(char)            \
+    X(const)           \
+    X(continue)        \
+    X(default)         \
+    X(do)              \
+    X(double)          \
+    X(else)            \
+    X(enum)            \
+    X(extern)          \
+    X(float)           \
+    X(for)             \
+    X(goto)            \
+    X(if)              \
+    X(inline)          \
+    X(int)             \
+    X(long)            \
+    X(register)        \
+    X(restrict)        \
+    X(return)          \
+    X(short)           \
+    X(signed)          \
+    X(sizeof)          \
+    X(static)          \
+    X(struct)          \
+    X(switch)          \
+    X(typedef)         \
+    X(union)           \
+    X(unsigned)        \
+    X(void)            \
+    X(volatile)        \
+    X(while)
+
+#define TOK_OPERATORS(X)  \
+    X("!"   , not_)       \
+    X("!="  , noteq)      \
+    X("%"   , mod)        \
+    X("%="  , modeq)      \
+    X("&"   , and_)       \
+    X("&&"  , andand)     \
+    X("&="  , andeq)      \
+    X("("   , lparen)     \
+    X(")"   , rparen)     \
+    X("*"   , star)       \
+    X("*="  , stareq)     \
+    X("+"   , plus)       \
+    X("++"  , plusplus)   \
+    X("+="  , pluseq)     \
+    X(","   , comma)      \
+    X("-"   , minus)      \
+    X("--"  , minusminus) \
+    X("-="  , minuseq)    \
+    X("->"  , arrow)      \
+    X("."   , dot)        \
+    X("..." , ellipsis)   \
+    X("/"   , div)        \
+    X("/="  , diveq)      \
+    X(":"   , colon)      \
+    X(";"   , semicolon)  \
+    X("<"   , lt)         \
+    X("<<"  , lshift)     \
+    X("<<=" , lshifteq)   \
+    X("<="  , lteq)       \
+    X("="   , eq)         \
+    X("=="  , eqeq)       \
+    X(">"   , gt)         \
+    X(">="  , gteq)       \
+    X(">>"  , rshift)     \
+    X(">>=" , rshifteq)   \
+    X("?"   , question)   \
+    X("["   , lbracket)   \
+    X("]"   , rbracket)   \
+    X("^"   , xor_)       \
+    X("^="  , xoreq)      \
+    X("{"   , lbrace)     \
+    X("|"   , or_)        \
+    X("|="  , oreq_)      \
+    X("||"  , oror)       \
+    X("}"   , rbrace)     \
+    X("~"   , bnot)
+
+enum class token_type {
+    eof,
+    id,
+    const_int,
+    const_float,
+    char_lit,
+    string_lit,
+
+#define DEF_TOK_KEYWORD(name) name ## _ ,
+#define DEF_TOK_OPERATOR(sym, name) name,
+    TOK_KEWORDS(DEF_TOK_KEYWORD)
+    TOK_OPERATORS(DEF_TOK_OPERATOR)
+#undef DEF_TOK_KEYWORD
+#undef DEF_TOK_OPERATOR
+};
+
+std::ostream& operator<<(std::ostream& os, token_type tt) {
+    switch (tt) {
+    case token_type::eof:           return os << "eof";
+    case token_type::id:            return os << "id";
+    case token_type::const_int:     return os << "const_int";
+    case token_type::const_float:   return os << "const_float";
+    case token_type::char_lit:      return os << "char_lit";
+    case token_type::string_lit:    return os << "string_lit";
+#define CASE_KEYWORD(name) case token_type::name##_: return os << #name;
+#define CASE_OP(sym, name) case token_type::name:    return os << sym;
+    TOK_KEWORDS(CASE_KEYWORD)
+    TOK_OPERATORS(CASE_OP)
+#undef CASE_KEYWORD
+#undef CASE_OP
+    }
+    NOT_IMPLEMENTED("token_type " << (int)tt);
+}
+
+token_type keyword_token_from_text(const std::string_view s) {
+#define X(name) if (s == #name) return token_type::name##_;
+    TOK_KEWORDS(X)
+#undef X
+    return token_type::eof;
+}
+
+token_type op_token_from(const std::string_view s) {
+#define X(sym, name) if (s == sym) return token_type::name;
+    TOK_OPERATORS(X)
+#undef X
+    return token_type::eof;
+}
+
+struct const_int_val {
+    uint64_t val;
+    bool unsigned_;
+    uint8_t long_;
+};
+
+std::ostream& operator<<(std::ostream& os, const_int_val civ) {
+    os << civ.val;
+    if (civ.unsigned_) os << "U";
+    if (civ.long_>0) os << "L";
+    if (civ.long_>1) os << "L";
+    return os;
+}
+
+class token {
+public:
+    explicit token() : type_{token_type::eof}, value_{} {
+    }
+    explicit token(token_type tt) : type_{tt}, value_{} {
+        assert(tt != token_type::id && tt != token_type::const_int && tt != token_type::const_float && tt != token_type::char_lit && tt != token_type::string_lit);
+    }
+    explicit token(token_type tt, const std::string& s) : type_{tt}, value_{s} {
+        assert(tt == token_type::id || tt == token_type::string_lit);
+    }
+    explicit token(const const_int_val& v) : type_{token_type::const_int}, value_{v} {
+    }
+    explicit token(unsigned char_val) : type_{token_type::char_lit}, value_{char_val} {
+    }
+    explicit token(double val) : type_{token_type::const_float}, value_{val} {
+    }
+
+    token_type type() const { return type_; }
+
+    const std::string& text() const {
+        assert(type_ == token_type::id || type_ == token_type::string_lit);
+        return std::get<std::string>(value_);
+    }
+
+    const_int_val int_val() const {
+        assert(type_ == token_type::const_int);
+        return std::get<const_int_val>(value_);
+    }
+
+    unsigned char_val() const {
+        assert(type_ == token_type::char_lit);
+        return std::get<unsigned>(value_);
+    }
+
+    double float_val() const {
+        assert(type_ == token_type::const_float);
+        return std::get<double>(value_);
+    }
+
+private:
+    token_type type_;
+    std::variant<std::monostate, std::string, const_int_val, unsigned, double> value_;
+};
+
+std::ostream& operator<<(std::ostream& os, const token& t) {
+    switch (t.type()) {
+    case token_type::id: return os << "id:" << t.text();
+    case token_type::const_int: return os << "int:" << t.int_val();
+    case token_type::const_float: return os << "float:" << t.float_val();
+    case token_type::char_lit: return os << "char:" << quoted(std::string(1, (char)t.char_val()));
+    case token_type::string_lit: return os << "str:" << quoted(t.text()) << "\n";
+    default:
+        return os << t.type();
+    }
+}
+
+class lexer {
+public:
+    explicit lexer(source_manager& sm, const source_file& source) : pp_{sm, source} {
+        next();
+    }
+
+    auto position() const {
+        return pp_.position();
+    }
+
+    const token& current() const {
+        return current_;
+    }
+
+    void next() {
+        const auto tok = pp_.current();
+        if (!tok) {
+            current_ = token{token_type::eof};
+            return;
+        }
+        pp_.next();
+
+        if (tok.type() == pp_token_type::identifier) {
+            const auto kt = keyword_token_from_text(tok.text());
+            if (kt == token_type::eof) {
+                current_ = token{token_type::id, tok.text()};
+            } else {
+                current_ = token{kt};
+            }
+        } else if(tok.type() == pp_token_type::punctuation) {
+            const auto pt = op_token_from(tok.text());
+            if (pt == token_type::eof) {
+                NOT_IMPLEMENTED(tok);
+            }
+            current_ = token{pt};
+        } else if (tok.type() == pp_token_type::number) {
+            char* end = nullptr;
+            errno = 0;
+            const auto n = strtoull(tok.text().c_str(), &end, 0);
+            int num_l = 0, num_u = 0;
+            for (; end && *end; ++end) {
+                const auto ch = static_cast<uint8_t>(*end | 0x20);
+                if (ch == 'u') ++num_u;
+                else if (ch == 'l') ++num_l;
+                else break;
+            }
+            if (!end || *end || (n == ULLONG_MAX && errno == ERANGE)) {
+                NOT_IMPLEMENTED("Invalid number " << tok.text());
+            }
+            current_ = token{const_int_val{n, !!num_u, static_cast<uint8_t>(num_l>2?2:num_l)}};
+        } else if (tok.type() == pp_token_type::float_number) {
+            char* end = nullptr;
+            errno = 0;
+            double v = std::strtod(tok.text().c_str(), &end);
+            if (!end || *end) {
+                NOT_IMPLEMENTED("Invalid float " << tok.text());
+            }
+            if (errno == ERANGE) {
+                if (v == HUGE_VAL) {
+                    v = INFINITY;
+                }
+                errno = 0;
+            }
+            current_ = token{v};
+        } else if (tok.type() == pp_token_type::character_constant) {
+            assert(tok.text().size() >= 3 && tok.text().front() == '\'' && tok.text().back() == '\'');
+            const auto [ch, len] = unescape_char(std::string_view{tok.text().c_str()+1,tok.text().size()-2});
+            if (len + 2 != tok.text().size() || ch > 255) {
+                NOT_IMPLEMENTED(tok << " ch = " << ch);
+            }
+            current_ = token{ch};
+        } else if (tok.type() == pp_token_type::string_literal) {
+            auto t = tok.text();
+            std::string lit;
+            for (;;) {
+                assert(t.size() >= 2 && t.front() == '\"' && t.back() == '\"');
+                lit += unescape(std::string_view{t.c_str() + 1, t.size()-2});
+                if (pp_.current().type() != pp_token_type::string_literal) {
+                    break;
+                }
+                t = pp_.current().text();
+                pp_.next();
+            }
+            current_ = token{token_type::string_lit, lit};
+        } else {
+            NOT_IMPLEMENTED(tok);
+        }
+    }
+
+private:
+    preprocessor pp_;
+    token current_;
+};
+
 int main(int argc, char* argv[]) {
     try {
         test_preprocessor();
@@ -258,15 +556,14 @@ int main(int argc, char* argv[]) {
         source_manager sm;
         define_standard_headers(sm);
         define_posix_headers(sm);
-        preprocessor pp{sm, sm.load(argv[1])};
-        std::vector<pp_token> res;
+        lexer l{sm, sm.load(argv[1])};
         try {
-            for (pp_token tok; !!(tok = pp.current()); pp.next()) {
-//                std::cout << ">>" << tok << "\n";
+            for (; l.current().type() != token_type::eof; l.next()) {
+                std::cout << l.current() << "\n";
             }
         } catch (...) {
             std::cerr << "At\n";
-            for (const auto& p : pp.position()) {
+            for (const auto& p : l.position()) {
                 std::cerr << p << "\n";
             }
             std::cerr << "\n";

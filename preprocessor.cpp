@@ -16,6 +16,7 @@ std::ostream& operator<<(std::ostream& os, pp_token_type type) {
     CASE_PP_TOK(header_name);
     CASE_PP_TOK(identifier);
     CASE_PP_TOK(number);
+    CASE_PP_TOK(float_number);
     CASE_PP_TOK(character_constant);
     CASE_PP_TOK(string_literal);
     CASE_PP_TOK(punctuation);
@@ -248,9 +249,6 @@ public:
                 type = pp_token_type::identifier;
                 consume_while([](int ch) { return is_alpha(ch) || is_digit(ch) || ch == '_'; });
             } else if (is_digit(ch) || (ch == '.' && is_digit(next))) {
-                type = pp_token_type::number;
-               // TOOD: Match more correctly
-
                 bool integral = true;
                 const bool hex = (next|0x20) == 'x';
                 if (ch == '0' && (hex || is_digit(next))) {
@@ -299,6 +297,7 @@ public:
                         }
                     }
                 }
+                type = integral ? pp_token_type::number : pp_token_type::float_number;
             } else if (ch == '\'' || ch == '\"') {
                 type = ch == '\'' ? pp_token_type::character_constant : pp_token_type::string_literal;
                 for (bool quote = false;; ++index_) {
@@ -324,7 +323,7 @@ public:
         }
     }
 
-    std::string get_filename() {
+    void fetch_filename() {
         const auto& t = source_.text();
         std::string res;
         int state_char = -1;
@@ -355,7 +354,7 @@ public:
                 }
             }
         }
-        return res;
+        current_ = pp_token{pp_token_type::header_name, res};
     }
 
 private:
@@ -586,10 +585,13 @@ private:
 
     std::string handle_include() {
         assert(!files_.empty());
-        const auto filename = files_.back()->get_filename();
+        files_.back()->fetch_filename();
         internal_next();
-        assert(filename.size() >= 2);
-        return filename;
+        assert(current_.type() == pp_token_type::header_name);
+        assert(current_.text().size() >= 2);
+        const auto filename = current_;
+        internal_next();
+        return filename.text();
     }
 
     void handle_define() {
