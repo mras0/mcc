@@ -173,6 +173,7 @@ size_t punct_length(std::string_view s) {
     assert(!s.empty() && is_punct_char(s[0]));
     if (s.length() == 1) return 1;
     switch (s[0]) {
+    case '.': return s.length() > 2 && s[1] == '.' && s[2] == '.' ? 3 : 1;
     case '#': return s[0] == s[1] ? 2 : 1;
     case '*': case '/': case '%': case '^': case '!':
         return s[1] == '=' ? 2 : 1;
@@ -225,6 +226,7 @@ public:
             }
 
             const auto ch = static_cast<uint8_t>(t[index_++]);
+            const int next = index_ < t.size() ? static_cast<uint8_t>(t[index_]) : -1;
             pp_token_type type = pp_token_type::eof;
             if (ch == '/' && index_ < t.size() && (t[index_] == '/' || t[index_] == '*')) {
                 type = pp_token_type::whitespace;
@@ -267,9 +269,19 @@ public:
             } else if (is_alpha(ch) || ch == '_') {
                 type = pp_token_type::identifier;
                 consume_while([](int ch) { return is_alpha(ch) || is_digit(ch) || ch == '_'; });
-            } else if (is_digit(ch)) {
+            } else if (is_digit(ch) || (ch == '.' && is_digit(next))) {
                 type = pp_token_type::number;
-                consume_while(is_digit);
+               // TOOD: Match more correctly
+                for (uint8_t last = ch; index_ < t.size(); ++index_) {
+                    const uint8_t here = static_cast<uint8_t>(t[index_]);
+                    if (is_digit(here) || here == '.' || here == 'e') {
+                    } else if (last == 'e' && (here == '+' || here == '-')) {
+                    } else if (here == 'u' || here == 'U' || here == 'l' || here == 'L') {
+                    } else {
+                        break;
+                    }
+                    last = here;
+                }
             } else if (ch == '\'' || ch == '\"') {
                 type = ch == '\'' ? pp_token_type::character_constant : pp_token_type::string_literal;
                 for (bool quote = false;; ++index_) {
@@ -570,21 +582,22 @@ private:
                     if (it != def.params->end()) {
                         const auto ai = std::distance(def.params->begin(), it);
                         auto nts = args[ai];
+
                         if (combine_state == combine_str) {
                             nts = { pp_token{pp_token_type::string_literal, make_string_literal(nts)} };
-                            combine_state = combine_none;
-                        } else if (combine_state != combine_none) {
+                        } else if (combine_state == combine_paste) {
                             assert(!replacement.empty() && !nts.empty());
                             auto last = replacement.back();
                             replacement.back() = pp_token{ last.type(), last.text() + nts.front().text() };
+                            std::cout << "paste '" << last.text() << "' and '" << nts.front().text() << "'\n";
                             nts.erase(nts.begin());
-                            combine_state = combine_none;
                         } else {
-                            // Expand macros in argument now that we know it's not being stringified/combined
+                            // Expand macros in argument now that we know it's not being combined/stringified
                             // (note: before restricting expansion of "macro_id")
                             vec_token_stream extra_tokens{{}};
                             nts = do_replace(nts, extra_tokens);
                         }
+                        combine_state = combine_none;
                         replacement.insert(replacement.end(), nts.begin(), nts.end());
                         continue;
                     }
@@ -607,7 +620,19 @@ private:
                 NOT_IMPLEMENTED("Unused #/## in macro replacement list for " << macro_id);
             }
         } else {
-            replacement = def.replacement;
+            // Object like-macro
+            // Only paste needs to be handled
+            for (size_t i = 0, s = def.replacement.size(); i < s; ++i) {
+                if (i + 1 < s && def.replacement[i+1].type() == pp_token_type::punctuation && def.replacement[i+1].text() == "##") {
+                    if (i + 2 >= s) {
+                        NOT_IMPLEMENTED("## at end of macro replacement list");
+                    }
+                    replacement.push_back(pp_token{def.replacement[i].type(), def.replacement[i].text() + def.replacement[i+2].text()});
+                    i += 2;
+                } else {
+                    replacement.push_back(def.replacement[i]);
+                }
+            }
         }
         struct push_expanding {
             explicit push_expanding(pre_processor& pp, const std::string& val) : pp{pp} {
@@ -726,6 +751,69 @@ X // 2 + ((2)+1)
 #define join(c, d) in_between(c hash_hash d)
 char p[] = join(x, y);
         )", { do_pp("char p[] = \"x ## y\";") } },
+
+        // Floating point numbers
+        { "42.0", {PP_NUM(42.0)}}, 
+        { "1.234", {PP_NUM(1.234)}}, 
+        { "5e-10", {PP_NUM(5e-10)}}, 
+        // Suffixed numbers
+        { "100ulLU", {PP_NUM(100ulLU)}},
+        // Variadic macro
+        { "#define X(...) __VA_ARGS__\nX(42, 43, 60)", { PP_NUM(42), PP_PUNCT(","), PP_NUM(43), PP_PUNCT(","), PP_NUM(60) }},
+        { "#define Y( a, ... ) __VA_ARGS__ a\nY( 1, 2, 3)", { PP_NUM(2), PP_PUNCT(","), PP_NUM(3), PP_NUM(1) }}, // "2, 3 1"
+
+        // https://github.com/pfultz2/Cloak/wiki/C-Preprocessor-tricks,-tips,-and-idioms
+        { R"(
+#define CAT(a, ...) PRIMITIVE_CAT(a, __VA_ARGS__)
+#define PRIMITIVE_CAT(a, ...) a ## __VA_ARGS__
+#define IIF(c) PRIMITIVE_CAT(IIF_, c)
+#define IIF_0(t, ...) __VA_ARGS__
+#define IIF_1(t, ...) t
+#define COMPL(b) PRIMITIVE_CAT(COMPL_, b)
+#define COMPL_0 1
+#define COMPL_1 0
+#define BITAND(x) PRIMITIVE_CAT(BITAND_, x)
+#define BITAND_0(y) 0
+#define BITAND_1(y) y
+#define INC(x) PRIMITIVE_CAT(INC_, x)
+#define INC_0 1
+#define INC_1 2
+#define INC_2 3
+#define INC_3 4
+#define INC_4 5
+#define INC_5 6
+#define INC_6 7
+#define INC_7 8
+#define INC_8 9
+#define INC_9 9
+#define DEC(x) PRIMITIVE_CAT(DEC_, x)
+#define DEC_0 0
+#define DEC_1 0
+#define DEC_2 1
+#define DEC_3 2
+#define DEC_4 3
+#define DEC_5 4
+#define DEC_6 5
+#define DEC_7 6
+#define DEC_8 7
+#define DEC_9 8
+#define CHECK_N(x, n, ...) n
+#define CHECK(...) CHECK_N(__VA_ARGS__, 0,)
+#define PROBE(x) x, 1,
+
+CHECK(PROBE(~)) // Expands to 1
+CHECK(xxx) // Expands to 0
+#define IS_PAREN(x) CHECK(IS_PAREN_PROBE x)
+#define IS_PAREN_PROBE(...) PROBE(~)
+IS_PAREN(()) // Expands to 1
+IS_PAREN(xxx) // Expands to 0
+)",     { PP_NUM(1), PP_NUM(0), PP_NUM(1), PP_NUM(0) } },
+
+    { "#define X 42\n#define Y (X+X)\n#if Y == 84\n1\n#else\n0\n#endif\n", {PP_NUM(1)}},
+    { "#define X 1\n#if defined(X)\n42\n#endif", {PP_NUM(32)}},
+    { "#if X\n42\n#endif", {}},
+    { "#if 0x2A==42\n1\n#endif", {PP_NUM(1)}},
+    { "#if 2==(1?2:3)\n1\n#endif", {PP_NUM(1)}},
 
     };
 
