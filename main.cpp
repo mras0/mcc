@@ -1,5 +1,6 @@
 #include <iostream>
 #include <variant>
+#include <map>
 
 #include "util.h"
 #include "source.h"
@@ -381,17 +382,153 @@ token_type op_token_from(const std::string_view s) {
     return token_type::eof;
 }
 
+enum class ctype {
+    none,
+
+    void_t,
+    plain_char_t,
+    char_t,
+    short_t,
+    int_t,
+    long_t,
+    long_long_t,
+    float_t,
+    double_t,
+    long_double_t,
+    pointer_t, // Must be first non-basic type in enum
+    array_t,
+    struct_t,
+    union_t,
+    enum_t,
+    function_t,
+
+    base_f     = 0xff,
+
+    unsigned_f = 1<<8,
+    extern_f   = 1<<9,
+    static_f   = 1<<10,
+    typedef_f  = 1<<11,
+    register_f = 1<<12,
+    const_f    = 1<<13,
+    restrict_f = 1<<14,
+    volatile_f = 1<<15,
+};
+
+ENUM_BIT_OPS(ctype)
+
+bool is_storage_class_specifier(token_type t) {
+    return t == token_type::typedef_
+        || t == token_type::extern_
+        || t == token_type::static_
+        || t == token_type::auto_
+        || t == token_type::register_;
+}
+
+ctype ctype_from_storage_class_token(token_type t) {
+    switch (t) {
+    case token_type::typedef_:  return ctype::typedef_f;
+    case token_type::extern_:   return ctype::extern_f;
+    case token_type::static_:   return ctype::static_f;
+    case token_type::auto_:     return ctype::none;
+    case token_type::register_: return ctype::register_f;
+    default: NOT_IMPLEMENTED(t);
+    }
+}
+
+bool is_simple_type_specifier(token_type t) {
+    return t == token_type::void_
+        || t == token_type::char_
+        || t == token_type::short_
+        || t == token_type::int_
+        || t == token_type::long_
+        || t == token_type::float_
+        || t == token_type::double_
+        || t == token_type::signed_
+        || t == token_type::unsigned_;
+}
+
+bool is_type_qualifier(token_type t) {
+    return t == token_type::const_
+        || t == token_type::restrict_
+        || t == token_type::volatile_;
+}
+
+ctype ctype_from_type_qualifier_token(token_type t) {
+    switch (t) {
+    case token_type::const_:     return ctype::const_f;
+    case token_type::restrict_:  return ctype::restrict_f;
+    case token_type::volatile_:  return ctype::volatile_f;
+    default: NOT_IMPLEMENTED(t);
+    }
+}
+
+bool is_function_specifier(token_type t) {
+    return t == token_type::inline_;
+}
+
+void output_flags(std::ostream& os, ctype t) {
+#define CHECK_FLAG(f) if (!!(t & ctype::f##_f)) os << #f " "
+    CHECK_FLAG(extern);
+    CHECK_FLAG(static);
+    CHECK_FLAG(typedef);
+    CHECK_FLAG(register);
+    CHECK_FLAG(const);
+    CHECK_FLAG(restrict);
+    CHECK_FLAG(volatile);
+    CHECK_FLAG(unsigned);
+#undef CHECK_FLAG
+    if ((t & ctype::base_f) == ctype::char_t && !(t & ctype::unsigned_f)) {
+        os << "signed ";
+    }
+}
+
+std::ostream& operator<<(std::ostream& os, ctype t) {
+    output_flags(os, t);
+    switch (t & ctype::base_f) {
+    case ctype::none:          return os << "none";
+    case ctype::void_t:        return os << "void";
+    case ctype::plain_char_t:  return os << "char";
+    case ctype::char_t:        return os << "char";
+    case ctype::short_t:       return os << "short";
+    case ctype::int_t:         return os << "int";
+    case ctype::long_t:        return os << "long";
+    case ctype::long_long_t:   return os << "long long";
+    case ctype::float_t:       return os << "float";
+    case ctype::double_t:      return os << "double";
+    case ctype::long_double_t: return os << "long double";
+    case ctype::pointer_t:     return os << "pointer";
+    case ctype::array_t:       return os << "array";
+    case ctype::struct_t:      return os << "struct";
+    case ctype::union_t:       return os << "union";
+    case ctype::enum_t:        return os << "enum";
+    case ctype::function_t:    return os << "function";
+    }
+    NOT_IMPLEMENTED(static_cast<uint32_t>(t & ctype::base_f));
+}
+
+ctype base_type(ctype t) {
+    return t & ctype::base_f;
+}
+
+ctype modified_base_type(ctype t, ctype new_base) {
+    return new_base | (t & ~ctype::base_f);
+}
+
 struct const_int_val {
     uint64_t val;
-    bool unsigned_;
-    uint8_t long_;
+    ctype type;
 };
 
 std::ostream& operator<<(std::ostream& os, const_int_val civ) {
     os << civ.val;
-    if (civ.unsigned_) os << "U";
-    if (civ.long_>0) os << "L";
-    if (civ.long_>1) os << "L";
+    if (!!(civ.type & ctype::unsigned_f)) {
+        os << 'U';
+    }
+    if (base_type(civ.type) == ctype::long_t) {
+        os << 'L';
+    } else if (base_type(civ.type) == ctype::long_long_t) {
+        os << "LL";
+    }
     return os;
 }
 
@@ -490,17 +627,23 @@ public:
             char* end = nullptr;
             errno = 0;
             const auto n = strtoull(tok.text().c_str(), &end, 0);
-            int num_l = 0, num_u = 0;
+            // FIXME: Use correct type
+            ctype t = ctype::int_t;
             for (; end && *end; ++end) {
                 const auto ch = static_cast<uint8_t>(*end | 0x20);
-                if (ch == 'u') ++num_u;
-                else if (ch == 'l') ++num_l;
+                if (ch == 'u') {
+                    t |= ctype::unsigned_f;
+                } else if (ch == 'l') {
+                    if (base_type(t) == ctype::long_t) {
+                        t = modified_base_type(t, ctype::long_long_t);
+                    }
+                }
                 else break;
             }
             if (!end || *end || (n == ULLONG_MAX && errno == ERANGE)) {
                 NOT_IMPLEMENTED("Invalid number " << tok.text());
             }
-            current_ = token{const_int_val{n, !!num_u, static_cast<uint8_t>(num_l>2?2:num_l)}};
+            current_ = token{const_int_val{n, t}};
         } else if (tok.type() == pp_token_type::float_number) {
             char* end = nullptr;
             errno = 0;
@@ -545,6 +688,292 @@ private:
     token current_;
 };
 
+class struct_info;
+
+class type {
+public:
+    explicit type(ctype t) : t_{t}, val_{} {
+        assert(base_type(t_) < ctype::pointer_t);
+    }
+
+    explicit type(ctype t, const std::shared_ptr<const type>& pointee) : t_{t}, val_{pointee} {
+        assert(base_type(t_) == ctype::pointer_t);
+    }
+
+    explicit type(ctype t, const std::shared_ptr<const struct_info>& struct_inf) : t_{t}, val_{struct_inf} {
+        assert(base_type(t_) == ctype::struct_t);
+    }
+
+    ctype ct() const { return t_; }
+    ctype base() const { return t_ & ctype::base_f; }
+
+    const type& pointee() const {
+        assert(base_type(t_) == ctype::pointer_t);
+        return *std::get<1>(val_);
+    }
+
+    const struct_info& struct_val() const {
+        assert(base_type(t_) == ctype::struct_t);
+        return *std::get<2>(val_);
+    }
+
+    void add_flags(ctype flags) {
+        assert(!(flags & ctype::base_f));
+        t_ |= flags;
+    }
+
+private:
+    ctype t_;
+    std::variant<std::monostate, std::shared_ptr<const type>, std::shared_ptr<const struct_info>> val_;
+};
+
+class struct_info {
+public:
+    explicit struct_info(const std::string& id) : id_(id) {}
+
+    const std::string& id() const { return id_; }
+
+private:
+    std::string id_;
+};
+
+std::ostream& operator<<(std::ostream& os, const struct_info& si) {
+    return os << "struct " << si.id();
+}
+
+std::ostream& operator<<(std::ostream& os, type t) {
+    switch (t.base()) {
+    case ctype::pointer_t: 
+        os << t.pointee();
+        os << " * ";
+        output_flags(os, t.ct());
+        return os;
+    case ctype::struct_t:
+        return os << "struct " << t.struct_val().id();
+    default:
+        return os << t.ct();
+    }
+}
+
+#define EXPECT(tok) do { if (current().type() != token_type::tok) NOT_IMPLEMENTED("Expected " << token_type::tok << " got " << current()); next(); } while (0)
+
+class parser {
+public:
+    explicit parser(source_manager& sm, const source_file& source) : lex_{sm, source} {
+    }
+
+    auto position() const {
+        return lex_.position();
+    }
+
+    void parse() {
+        for (;;) {
+            parse_declaration();
+        }
+    }
+
+private:
+    lexer lex_;
+    std::vector<std::shared_ptr<struct_info>> structs_;
+
+    std::shared_ptr<struct_info> find_struct(const std::string_view id) {
+        for (auto& s: structs_) {
+            if (s->id() == id) {
+                return s;
+            }
+        }
+        return nullptr;
+    }
+
+    void next() {
+        assert(current().type() != token_type::eof);
+        lex_.next();
+    }
+
+    const token& current() const {
+        return lex_.current();
+    }
+
+    bool is_typedef_name(const std::string& id) const {
+        std::cout << "TODO: Check if typedef name: " << id << "\n";
+        return false;
+    }
+
+    void parse_declaration() {
+        // declaration
+        //    declaration_specifiers init-declarator-list? ';'
+        const auto ds = parse_declaration_specifiers();
+
+        if (current().type() == token_type::semicolon) {
+            NOT_IMPLEMENTED("type(def) decl");
+        }
+
+        parse_declarator(ds);
+        EXPECT(semicolon);
+
+        // init-declarator-list
+        //    init-declarator
+        //    init-declarator-list , init-declarator
+        
+        // init-declarator
+        //     declarator
+        //     declarator = initializer
+    }
+
+    type parse_declaration_specifiers() {
+        type res_type{ctype::none};
+        int long_ = 0;
+        int int_  = 0;
+        int sign  = -1;
+
+        for (bool stop = false; !stop;) {
+            const auto t = current().type();
+            // declaration_specifiers
+            //     storage_class_specifier
+            //     type-specifier
+            //     type-qualifier
+            //     function-specifier
+
+            if (is_storage_class_specifier(t)) {
+                res_type.add_flags(ctype_from_storage_class_token(t));
+                next();
+                continue;
+            }
+
+            if (is_type_qualifier(t)) {
+                res_type.add_flags(ctype_from_type_qualifier_token(t));
+                next();
+                continue;
+            }
+
+            if (is_simple_type_specifier(t)) {
+                if (t == token_type::int_) {
+                    ++int_;
+                } else if (t == token_type::long_) {
+                    ++long_;
+                } else if (t == token_type::signed_) {
+                    if (sign != -1) NOT_IMPLEMENTED(sign);
+                    sign = 1;
+                } else if (t == token_type::unsigned_) {
+                    if (sign != -1) NOT_IMPLEMENTED(sign);
+                    sign = 0;
+                } else {
+                    if (res_type.base() != ctype::none) {
+                        NOT_IMPLEMENTED(t << " in addition to " << res_type);
+                    }
+                    switch (t) {
+                    case token_type::void_:   res_type = type{modified_base_type(res_type.ct(), ctype::void_t)}; break;
+                    case token_type::char_:   res_type = type{modified_base_type(res_type.ct(), ctype::plain_char_t)}; break;
+                    case token_type::short_:  res_type = type{modified_base_type(res_type.ct(), ctype::short_t)}; break;
+                    case token_type::float_:  res_type = type{modified_base_type(res_type.ct(), ctype::float_t)}; break;
+                    case token_type::double_: res_type = type{modified_base_type(res_type.ct(), ctype::double_t)}; break;
+                    default:
+                        NOT_IMPLEMENTED(t);
+                    }
+                }
+                next();
+                continue;
+            }
+
+            if (is_function_specifier(t)) {
+                NOT_IMPLEMENTED(t);
+            }
+
+            if (t == token_type::struct_
+                || t == token_type::union_
+                || t == token_type::enum_) {
+                next();
+
+                if (res_type.base() != ctype::none) {
+                    NOT_IMPLEMENTED("Invalid decl " << res_type << " and " << t);
+                }
+
+                std::string id;
+                if (current().type() == token_type::id) {
+                    id = current().text();
+                    next();
+                }
+                if (current().type() == token_type::lbrace) {
+                    NOT_IMPLEMENTED(current());
+                } else if (id.empty()) {
+                    NOT_IMPLEMENTED(current());
+                }
+
+                assert(!find_struct(id));
+                structs_.push_back(std::make_shared<struct_info>(id));
+                res_type = type{ctype::struct_t | res_type.ct(), structs_.back()};
+
+                continue;
+            }
+
+            if (t == token_type::id && is_typedef_name(current().text())) {
+                NOT_IMPLEMENTED("typedef " << current());
+            }
+
+            break;
+        }
+
+        if (!long_ && !int_ && sign == -1) {
+            return res_type;
+        }
+
+        if (long_ == 1 && !int_ && sign == -1 && res_type.base() == ctype::double_t) {
+            return type{modified_base_type(res_type.ct(), ctype::long_double_t)};
+        }
+
+        NOT_IMPLEMENTED(res_type << " long: " << long_ << " int: " << int_ << " sign: " << sign << " current: " << current());
+    }
+
+    void parse_declarator(type t) {
+        // '*' type-qualifier-list? pointer?
+        while (current().type() == token_type::star) {
+            next();
+            ctype pt = ctype::pointer_t;
+            while (is_type_qualifier(current().type())) {
+                pt |=  ctype_from_type_qualifier_token(current().type());
+                next();
+            }
+            t = type{pt, std::make_shared<type>(t)};
+        }
+        parse_direct_declarator(t);
+    }
+
+    void parse_direct_declarator(type t) {
+        std::string id;
+        if (current().type() == token_type::lparen) {
+            NOT_IMPLEMENTED(t << " (declarator)");
+        } else if (current().type() == token_type::id) {
+            id = current().text();
+            next();
+            std::cout << t << " " << id << "\n";
+            if (current().type() == token_type::lbracket) {
+                NOT_IMPLEMENTED(current());
+            } else if (current().type() == token_type::lparen) {
+                next();
+                parse_parameter_type_list();
+                EXPECT(rparen);
+            }
+        } else {
+            NOT_IMPLEMENTED(current());
+        }
+    }
+
+    void parse_parameter_type_list() {
+        for (size_t cnt = 0;; ++cnt) {
+            const auto t = current().type();
+            if (t == token_type::rparen) {
+                break;
+            }
+            if (cnt) {
+                EXPECT(comma);
+            }
+            const auto ds = parse_declaration_specifiers();
+            parse_declarator(ds);
+        }
+        NOT_IMPLEMENTED("FUNCTION");
+    }
+};
+
 int main(int argc, char* argv[]) {
     try {
         test_preprocessor();
@@ -556,14 +985,12 @@ int main(int argc, char* argv[]) {
         source_manager sm;
         define_standard_headers(sm);
         define_posix_headers(sm);
-        lexer l{sm, sm.load(argv[1])};
+        parser ps{sm, sm.load(argv[1])};
         try {
-            for (; l.current().type() != token_type::eof; l.next()) {
-                std::cout << l.current() << "\n";
-            }
+            ps.parse();
         } catch (...) {
             std::cerr << "At\n";
-            for (const auto& p : l.position()) {
+            for (const auto& p : ps.position()) {
                 std::cerr << p << "\n";
             }
             std::cerr << "\n";
