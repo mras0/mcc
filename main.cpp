@@ -217,7 +217,9 @@ void define_standard_headers(source_manager& sm) {
     sm.define_standard_headers("errno.h", "");
     sm.define_standard_headers("fenv.h", "");
     sm.define_standard_headers("float.h", "");
-    sm.define_standard_headers("inttypes.h", "");
+    sm.define_standard_headers("inttypes.h", R"(
+#include <stdint.h>
+)");
     sm.define_standard_headers("iso646.h", "");
     sm.define_standard_headers("limits.h", "");
     sm.define_standard_headers("locale.h", "");
@@ -229,7 +231,19 @@ void define_standard_headers(source_manager& sm) {
     sm.define_standard_headers("stdatomic.h", "");
     sm.define_standard_headers("stdbool.h", "");
     sm.define_standard_headers("stddef.h", "");
-    sm.define_standard_headers("stdint.h", "");
+    sm.define_standard_headers("stdint.h", R"(
+#ifndef _STDINT_H
+#define _STDINT_H
+typedef signed char int8_t;
+typedef short int int16_t;
+typedef int int32_t;
+typedef long long int int64_t;
+typedef unsigned char           uint8_t;
+typedef unsigned short int      uint16_t;
+typedef unsigned int            uint32_t;
+typedef unsigned long long int  uint64_t;
+#endif
+)");
     sm.define_standard_headers("stdio.h", "");
     sm.define_standard_headers("stdlib.h", "");
     sm.define_standard_headers("stdnoreturn.h", "");
@@ -329,7 +343,7 @@ void define_posix_headers(source_manager& sm) {
     X("^="  , xoreq)      \
     X("{"   , lbrace)     \
     X("|"   , or_)        \
-    X("|="  , oreq_)      \
+    X("|="  , oreq)       \
     X("||"  , oror)       \
     X("}"   , rbrace)     \
     X("~"   , bnot)
@@ -380,6 +394,56 @@ token_type op_token_from(const std::string_view s) {
     TOK_OPERATORS(X)
 #undef X
     return token_type::eof;
+}
+
+int operator_precedence(token_type t) {
+    switch (t) {
+    case token_type::star:
+    case token_type::div:
+    case token_type::mod:
+        return 5;
+    case token_type::plus:
+    case token_type::minus:
+        return 6;
+    case token_type::lshift:
+    case token_type::rshift:
+        return 7;
+    case token_type::lt:
+    case token_type::lteq:
+    case token_type::gteq:
+    case token_type::gt:
+        return 9;
+    case token_type::eqeq:
+    case token_type::noteq:
+        return 10;
+    case token_type::and_:
+        return 11;
+    case token_type::xor_:
+        return 12;
+    case token_type::or_:
+        return 13;
+    case token_type::andand:
+        return 14;
+    case token_type::oror:
+        return 15;
+    case token_type::question:
+    case token_type::eq:
+    case token_type::pluseq:
+    case token_type::minuseq:
+    case token_type::stareq:
+    case token_type::diveq:
+    case token_type::modeq:
+    case token_type::lshifteq:
+    case token_type::rshifteq:
+    case token_type::andeq:
+    case token_type::xoreq:
+    case token_type::oreq:
+        return 16;
+    case token_type::comma:
+        return 17;
+    default:
+        return 1000;
+    }
 }
 
 enum class ctype {
@@ -464,6 +528,13 @@ ctype ctype_from_type_qualifier_token(token_type t) {
 
 bool is_function_specifier(token_type t) {
     return t == token_type::inline_;
+}
+
+bool is_literal(token_type t) {
+    return t == token_type::const_int
+        || t == token_type::const_float
+        || t == token_type::char_lit
+        || t == token_type::string_lit;
 }
 
 void output_flags(std::ostream& os, ctype t) {
@@ -688,10 +759,18 @@ private:
     token current_;
 };
 
+class array_info;
 class struct_info;
+class union_info;
+class enum_info;
+class function_info;
+class type;
 
 class type {
 public:
+    explicit type() : t_{ctype::none}, val_{} {
+    }
+
     explicit type(ctype t) : t_{t}, val_{} {
         assert(base_type(t_) < ctype::pointer_t);
     }
@@ -700,21 +779,33 @@ public:
         assert(base_type(t_) == ctype::pointer_t);
     }
 
+    explicit type(ctype t, const std::shared_ptr<const array_info>& array_inf) : t_{t}, val_{array_inf} {
+        assert(base_type(t_) == ctype::array_t);
+    }
+
     explicit type(ctype t, const std::shared_ptr<const struct_info>& struct_inf) : t_{t}, val_{struct_inf} {
         assert(base_type(t_) == ctype::struct_t);
     }
 
-    ctype ct() const { return t_; }
-    ctype base() const { return t_ & ctype::base_f; }
-
-    const type& pointee() const {
-        assert(base_type(t_) == ctype::pointer_t);
-        return *std::get<1>(val_);
+    explicit type(ctype t, const std::shared_ptr<const union_info>& union_inf) : t_{t}, val_{union_inf} {
+        assert(base_type(t_) == ctype::union_t);
     }
 
-    const struct_info& struct_val() const {
-        assert(base_type(t_) == ctype::struct_t);
-        return *std::get<2>(val_);
+    explicit type(ctype t, const std::shared_ptr<const enum_info>& enum_inf) : t_{t}, val_{enum_inf} {
+        assert(base_type(t_) == ctype::enum_t);
+    }
+
+    explicit type(ctype t, const std::shared_ptr<const function_info>& function_inf) : t_{t}, val_{function_inf} {
+        assert(base_type(t_) == ctype::function_t);
+    }
+
+    ctype ct() const { return t_; }
+
+    ctype base() const { return t_ & ctype::base_f; }
+
+    void set_base_type(ctype new_base) {
+        assert(!(new_base & ~ctype::base_f) && new_base <= ctype::long_double_t);
+        t_ = modified_base_type(t_, new_base);
     }
 
     void add_flags(ctype flags) {
@@ -722,14 +813,108 @@ public:
         t_ |= flags;
     }
 
+    void remove_flags(ctype flags) {
+        assert(!(flags & ctype::base_f));
+        t_ &= ~flags;
+    }
+
+    void modify_inner(const std::shared_ptr<type>& t) {
+        if (base() == ctype::pointer_t) {
+            auto& pointed_type = std::get<1>(val_);
+            if (pointed_type->ct() != ctype::none) {
+                NOT_IMPLEMENTED(pointed_type->ct());
+            }
+            val_ = t;
+        } else {
+            NOT_IMPLEMENTED(ct());
+        }        
+    }
+
+    const type& pointer_val() const {
+        assert(base_type(t_) == ctype::pointer_t);
+        return *std::get<1>(val_);
+    }
+
+    const array_info& array_val() const {
+        assert(base_type(t_) == ctype::array_t);
+        return *std::get<2>(val_);
+    }
+
+    const struct_info& struct_val() const {
+        assert(base_type(t_) == ctype::struct_t);
+        return *std::get<3>(val_);
+    }
+
+    const union_info& union_val() const {
+        assert(base_type(t_) == ctype::union_t);
+        return *std::get<4>(val_);
+    }
+
+    const enum_info& enum_val() const {
+        assert(base_type(t_) == ctype::enum_t);
+        return *std::get<5>(val_);
+    }
+
+    const function_info& function_val() const {
+        assert(base_type(t_) == ctype::function_t);
+        return *std::get<6>(val_);
+    }
+
 private:
     ctype t_;
-    std::variant<std::monostate, std::shared_ptr<const type>, std::shared_ptr<const struct_info>> val_;
+    std::variant<std::monostate,
+                 std::shared_ptr<const type>,
+                 std::shared_ptr<const array_info>,
+                 std::shared_ptr<const struct_info>,
+                 std::shared_ptr<const union_info>,
+                 std::shared_ptr<const enum_info>,
+                 std::shared_ptr<const function_info>
+        > val_;
 };
+
+std::ostream& operator<<(std::ostream& os, type t);
+
+class decl {
+public:
+    explicit decl(const std::shared_ptr<const type>& t, const std::string& id) : type_{t}, id_{id} {}
+
+    const std::shared_ptr<const type>& t() const { return type_; }
+    const std::string& id() const { return id_; }
+
+private:
+    std::shared_ptr<const type> type_;
+    std::string id_;
+};
+
+std::ostream& operator<<(std::ostream& os, const decl& d) {
+    return os << *d.t() << " " << d.id();
+}
+
+class array_info {
+public:
+    static constexpr uint64_t unbounded = UINT64_MAX;
+    explicit array_info(const std::shared_ptr<const type>& t, uint64_t bound) : t_{t}, bound_{bound} {}
+
+    const std::shared_ptr<const type>& t() const { return t_;}
+    uint64_t bound() const { return bound_; }
+
+private:
+    std::shared_ptr<const type> t_;
+    uint64_t bound_;
+};
+
+std::ostream& operator<<(std::ostream& os, const array_info& ai) {
+    os << *ai.t();
+    if (ai.bound() != array_info::unbounded) {
+        return os << "[" << ai.bound() << "]";
+    } else {
+        return os << "[]";
+    }
+}
 
 class struct_info {
 public:
-    explicit struct_info(const std::string& id) : id_(id) {}
+    explicit struct_info(const std::string& id) : id_{id} {}
 
     const std::string& id() const { return id_; }
 
@@ -741,21 +926,53 @@ std::ostream& operator<<(std::ostream& os, const struct_info& si) {
     return os << "struct " << si.id();
 }
 
+class function_info {
+public:
+    explicit function_info(const std::shared_ptr<const type>& ret_type, const std::vector<decl>& params) : ret_type_{ret_type}, params_{params} {
+    }
+
+    const std::shared_ptr<const type>& ret_type() const { return ret_type_; }
+    const std::vector<decl>& params() const { return params_; }
+
+private:
+    std::shared_ptr<const type> ret_type_;
+    std::vector<decl> params_;
+};
+
+std::ostream& operator<<(std::ostream& os, const function_info& fi) {
+    os << *fi.ret_type() << "(";
+    for (size_t i = 0; i < fi.params().size(); ++i) {
+        if (i) os << ", ";
+        os << fi.params()[i];
+    }
+    return os << ")";
+}
+
 std::ostream& operator<<(std::ostream& os, type t) {
     switch (t.base()) {
     case ctype::pointer_t: 
-        os << t.pointee();
+        os << t.pointer_val();
         os << " * ";
         output_flags(os, t.ct());
         return os;
+    case ctype::array_t:
+        output_flags(os, t.ct());
+        return os << t.array_val();
     case ctype::struct_t:
+        output_flags(os, t.ct());
         return os << "struct " << t.struct_val().id();
+    case ctype::union_t: NOT_IMPLEMENTED("union");
+    case ctype::enum_t: NOT_IMPLEMENTED("enum");
+    case ctype::function_t:
+        output_flags(os, t.ct());
+        return os << t.function_val();
     default:
         return os << t.ct();
     }
 }
 
 #define EXPECT(tok) do { if (current().type() != token_type::tok) NOT_IMPLEMENTED("Expected " << token_type::tok << " got " << current()); next(); } while (0)
+#define TRACE(msg) std::cout << __FILE__ << ":" << __LINE__ << ": " << __func__ <<  " Current: " << current() << " " << msg << "\n"
 
 class parser {
 public:
@@ -774,13 +991,23 @@ public:
 
 private:
     lexer lex_;
+    int unnamed_cnt_ = 0;
     std::vector<std::shared_ptr<struct_info>> structs_;
+    std::map<std::string, std::shared_ptr<type>> typedefs_;
 
     std::shared_ptr<struct_info> find_struct(const std::string_view id) {
         for (auto& s: structs_) {
             if (s->id() == id) {
                 return s;
             }
+        }
+        return nullptr;
+    }
+
+    std::shared_ptr<type> find_typedef(const std::string& id) const {
+        if (auto it = typedefs_.find(id); it != typedefs_.end()) {
+            assert(!(it->second->ct() & ctype::typedef_f));
+            return it->second;
         }
         return nullptr;
     }
@@ -794,22 +1021,37 @@ private:
         return lex_.current();
     }
 
-    bool is_typedef_name(const std::string& id) const {
-        std::cout << "TODO: Check if typedef name: " << id << "\n";
-        return false;
-    }
-
     void parse_declaration() {
         // declaration
         //    declaration_specifiers init-declarator-list? ';'
         const auto ds = parse_declaration_specifiers();
 
         if (current().type() == token_type::semicolon) {
-            NOT_IMPLEMENTED("type(def) decl");
+            // Type decl.
+            if (!!(ds->ct() & ctype::typedef_f)) {
+                NOT_IMPLEMENTED(ds);
+            }
+            std::cout << *ds << "\n";
+            next();
+            return;
         }
 
-        parse_declarator(ds);
+        auto d = parse_declarator(ds);
         EXPECT(semicolon);
+
+        std::cout << d << "\n";
+        if (!!(d.t()->ct() & ctype::typedef_f)) {
+            if (d.id().empty()) {
+                NOT_IMPLEMENTED(d);
+            }
+            if (auto it = typedefs_.find(d.id()); it != typedefs_.end()) {
+                NOT_IMPLEMENTED(d << " Already defined as " << it->first << " " << it->second);
+            }
+            auto t = std::make_shared<type>(*d.t());
+            t->remove_flags(ctype::typedef_f);
+            typedefs_[d.id()] = t;
+            return;
+        }
 
         // init-declarator-list
         //    init-declarator
@@ -820,8 +1062,8 @@ private:
         //     declarator = initializer
     }
 
-    type parse_declaration_specifiers() {
-        type res_type{ctype::none};
+    std::shared_ptr<type> parse_declaration_specifiers() {
+        auto res_type = std::make_shared<type>();
         int long_ = 0;
         int int_  = 0;
         int sign  = -1;
@@ -835,13 +1077,13 @@ private:
             //     function-specifier
 
             if (is_storage_class_specifier(t)) {
-                res_type.add_flags(ctype_from_storage_class_token(t));
+                res_type->add_flags(ctype_from_storage_class_token(t));
                 next();
                 continue;
             }
 
             if (is_type_qualifier(t)) {
-                res_type.add_flags(ctype_from_type_qualifier_token(t));
+                res_type->add_flags(ctype_from_type_qualifier_token(t));
                 next();
                 continue;
             }
@@ -858,15 +1100,15 @@ private:
                     if (sign != -1) NOT_IMPLEMENTED(sign);
                     sign = 0;
                 } else {
-                    if (res_type.base() != ctype::none) {
-                        NOT_IMPLEMENTED(t << " in addition to " << res_type);
+                    if (res_type->base() != ctype::none) {
+                        NOT_IMPLEMENTED(t << " in addition to " << *res_type);
                     }
                     switch (t) {
-                    case token_type::void_:   res_type = type{modified_base_type(res_type.ct(), ctype::void_t)}; break;
-                    case token_type::char_:   res_type = type{modified_base_type(res_type.ct(), ctype::plain_char_t)}; break;
-                    case token_type::short_:  res_type = type{modified_base_type(res_type.ct(), ctype::short_t)}; break;
-                    case token_type::float_:  res_type = type{modified_base_type(res_type.ct(), ctype::float_t)}; break;
-                    case token_type::double_: res_type = type{modified_base_type(res_type.ct(), ctype::double_t)}; break;
+                    case token_type::void_:   res_type->set_base_type(ctype::void_t); break;
+                    case token_type::char_:   res_type->set_base_type(ctype::plain_char_t); break;
+                    case token_type::short_:  res_type->set_base_type(ctype::short_t); break;
+                    case token_type::float_:  res_type->set_base_type(ctype::float_t); break;
+                    case token_type::double_: res_type->set_base_type(ctype::double_t); break;
                     default:
                         NOT_IMPLEMENTED(t);
                     }
@@ -884,30 +1126,55 @@ private:
                 || t == token_type::enum_) {
                 next();
 
-                if (res_type.base() != ctype::none) {
-                    NOT_IMPLEMENTED("Invalid decl " << res_type << " and " << t);
+                if (res_type->base() != ctype::none) {
+                    NOT_IMPLEMENTED("Invalid decl " << *res_type << " and " << t);
                 }
 
+                std::shared_ptr<struct_info> struct_;
                 std::string id;
                 if (current().type() == token_type::id) {
                     id = current().text();
                     next();
+
+                    struct_ = find_struct(id);
+                    if (!struct_) {
+                        struct_ = std::make_shared<struct_info>(id);
+                        structs_.push_back(struct_);
+                    }
                 }
                 if (current().type() == token_type::lbrace) {
-                    NOT_IMPLEMENTED(current());
+                    next();
+                    parse_struct_declaration_list();
+                    EXPECT(rbrace);
+                    TRACE("Not using structure definition");
+                    if (!struct_) {
+                        assert(id.empty());
+                        id = "__unnamed_struct" + std::to_string(unnamed_cnt_++);
+                        struct_ = std::make_shared<struct_info>(id);
+                        structs_.push_back(struct_);
+                    } else {
+                        // TODO: Check that the struct hasn't been defined before
+                    }
                 } else if (id.empty()) {
                     NOT_IMPLEMENTED(current());
                 }
 
-                assert(!find_struct(id));
-                structs_.push_back(std::make_shared<struct_info>(id));
-                res_type = type{ctype::struct_t | res_type.ct(), structs_.back()};
-
+                assert(struct_);
+                res_type = std::make_shared<type>(ctype::struct_t | res_type->ct(), struct_);
                 continue;
             }
 
-            if (t == token_type::id && is_typedef_name(current().text())) {
-                NOT_IMPLEMENTED("typedef " << current());
+            if (t == token_type::id) {
+                if (auto td = find_typedef(current().text())) {
+                    if (res_type->base() != ctype::none) {
+                        NOT_IMPLEMENTED("typedef " << *td << " combine with " << *res_type);
+                    }
+                    auto saved_flags = res_type->ct() & ~ctype::base_f;
+                    res_type = std::make_shared<type>(*td);
+                    res_type->add_flags(saved_flags);
+                    next();
+                    continue;
+                }
             }
 
             break;
@@ -917,14 +1184,44 @@ private:
             return res_type;
         }
 
-        if (long_ == 1 && !int_ && sign == -1 && res_type.base() == ctype::double_t) {
-            return type{modified_base_type(res_type.ct(), ctype::long_double_t)};
+        // Long double
+        if (long_ == 1 && !int_ && sign == -1 && res_type->base() == ctype::double_t) {
+            res_type->set_base_type(ctype::long_double_t);
+            return res_type;
         }
 
-        NOT_IMPLEMENTED(res_type << " long: " << long_ << " int: " << int_ << " sign: " << sign << " current: " << current());
+        if (sign == 0) {
+            res_type->add_flags(ctype::unsigned_f);
+        }
+
+        // short/int/long/long long
+        if (int_ == 1) {
+            if (res_type->base() == ctype::none) {
+                if (long_ == 0) {
+                    res_type->set_base_type(ctype::int_t);
+                    return res_type;
+                } else if (long_ == 1) {
+                    res_type->set_base_type(ctype::long_t);
+                    return res_type;
+                } else if (long_ == 2) {
+                    res_type->set_base_type(ctype::long_long_t);
+                    return res_type;
+                }
+            } else if (res_type->base() == ctype::short_t) {
+                return res_type;
+            }
+        }
+
+        // signed char/ unsigned char
+        if (!long_ && !int_ && sign != -1 && res_type->base() == ctype::plain_char_t) {
+            res_type->set_base_type(ctype::char_t);
+            return res_type;
+        }
+
+        NOT_IMPLEMENTED(*res_type << " long: " << long_ << " int: " << int_ << " sign: " << sign << " current: " << current());
     }
 
-    void parse_declarator(type t) {
+    decl parse_declarator(std::shared_ptr<type> t) {
         // '*' type-qualifier-list? pointer?
         while (current().type() == token_type::star) {
             next();
@@ -933,32 +1230,44 @@ private:
                 pt |=  ctype_from_type_qualifier_token(current().type());
                 next();
             }
-            t = type{pt, std::make_shared<type>(t)};
+            t = std::make_shared<type>(pt, t);
         }
-        parse_direct_declarator(t);
+        return parse_direct_declarator(t);
     }
 
-    void parse_direct_declarator(type t) {
+    decl parse_direct_declarator(std::shared_ptr<type> t) {
+        std::shared_ptr<type> inner_type{};
         std::string id;
         if (current().type() == token_type::lparen) {
-            NOT_IMPLEMENTED(t << " (declarator)");
+            next();
+            auto decl = parse_declarator(std::make_shared<type>());
+            EXPECT(rparen);
+            inner_type = std::make_shared<type>(*decl.t());
+            id = decl.id();
         } else if (current().type() == token_type::id) {
             id = current().text();
             next();
-            std::cout << t << " " << id << "\n";
-            if (current().type() == token_type::lbracket) {
-                NOT_IMPLEMENTED(current());
-            } else if (current().type() == token_type::lparen) {
-                next();
-                parse_parameter_type_list();
-                EXPECT(rparen);
-            }
-        } else {
-            NOT_IMPLEMENTED(current());
         }
+        if (current().type() == token_type::lbracket) {
+            next();
+            parse_assignment_expression(); // FIXME: Use result
+            EXPECT(rbracket);
+            t = std::make_shared<type>(ctype::array_t, std::make_unique<array_info>(t, array_info::unbounded));
+        } else if (current().type() == token_type::lparen) {
+            next();
+            auto arg_types = parse_parameter_type_list();
+            EXPECT(rparen);
+            t = std::make_shared<type>(ctype::function_t, std::make_unique<function_info>(t, arg_types));
+        }
+        if (inner_type) {
+            inner_type->modify_inner(t);
+            t = inner_type;
+        }
+        return decl{t, id};
     }
 
-    void parse_parameter_type_list() {
+    std::vector<decl> parse_parameter_type_list() {
+        std::vector<decl> arg_types;
         for (size_t cnt = 0;; ++cnt) {
             const auto t = current().type();
             if (t == token_type::rparen) {
@@ -968,9 +1277,124 @@ private:
                 EXPECT(comma);
             }
             const auto ds = parse_declaration_specifiers();
-            parse_declarator(ds);
+            const auto d = parse_declarator(ds);
+            arg_types.push_back(d);
         }
-        NOT_IMPLEMENTED("FUNCTION");
+        return arg_types;
+    }
+
+    void parse_struct_declaration_list() {
+        while (current().type() != token_type::rbrace) {
+            parse_declaration();
+        }
+    }
+
+    void parse_enum_list() {
+        while (current().type() != token_type::rbrace) {
+            NOT_IMPLEMENTED(current());
+        }
+    }
+
+    //
+    // Expression
+    //
+
+    void parse_primary_expression() {
+        // identifier
+        // constant
+        // string-literal
+        // ( expression )
+        const auto t = current().type();
+        if (t == token_type::id) {
+            NOT_IMPLEMENTED(current());
+        } else if (is_literal(t)) {
+            TRACE("Consuming");
+            next();
+            return;
+        } else if (t == token_type::lparen) {
+            next();
+            parse_expression();
+            EXPECT(rparen);
+            return;
+        }
+        NOT_IMPLEMENTED("Expected primary expression got " << current());
+    }
+
+    void parse_postfix_expression() {
+        parse_primary_expression();
+        const auto t = current().type();
+        if (t == token_type::lbracket
+            || t == token_type::lparen
+            || t == token_type::dot
+            || t == token_type::arrow
+            || t == token_type::plusplus
+            || t == token_type::minusminus) {
+            NOT_IMPLEMENTED(t);
+        }
+    }
+
+    void parse_unary_expression() {
+        const auto t = current().type();
+        if (t == token_type::plusplus
+            || t == token_type::minusminus) {
+            NOT_IMPLEMENTED(t);
+        }
+        if (t == token_type::and_
+            || t == token_type::star
+            || t == token_type::plus
+            || t == token_type::minus
+            || t == token_type::bnot
+            || t == token_type::not_) {
+            NOT_IMPLEMENTED(t);
+            // parse_cast_expression
+        }
+        if (t == token_type::sizeof_) {
+            NOT_IMPLEMENTED(t);
+            // parse_unary_expression or if parenthesis: parse typename
+        }
+        return parse_postfix_expression();
+    }
+
+    void parse_expression1(/*expression_ptr&& lhs, */int outer_precedence) {
+        for (;;) {
+            const auto op = current().type();
+            const auto precedence = operator_precedence(op);
+            if (precedence > outer_precedence) {
+                break;
+            }
+            next();
+            if (op == token_type::question) {
+                NOT_IMPLEMENTED(current());
+                //auto l = parse_assignment_expression();
+                //EXPECT(token_type::colon);
+                //lhs = make_expression<conditional_expression>(std::move(lhs), std::move(l), parse_assignment_expression());
+                continue;
+            }
+
+            /*auto rhs = */parse_unary_expression();
+            for (;;) {
+                const auto look_ahead = current().type();
+                const auto look_ahead_precedence = operator_precedence(look_ahead);
+                if (look_ahead_precedence > precedence /*|| (look_ahead_precedence == precedence && !is_right_to_left(look_ahead))*/) {
+                    break;
+                }
+                /*rhs = */parse_expression1(/*std::move(rhs), */look_ahead_precedence);
+            }
+
+            //lhs = make_expression<binary_expression>(op, std::move(lhs), std::move(rhs));
+        }
+        //return std::move(lhs);
+    }
+
+
+    void parse_expression() {
+        /*lhs=*/ parse_unary_expression();
+        return parse_expression1(operator_precedence(token_type::comma));
+    }
+
+    void parse_assignment_expression() {
+        /*lhs=*/ parse_unary_expression();
+        return parse_expression1(operator_precedence(token_type::eq));
     }
 };
 
