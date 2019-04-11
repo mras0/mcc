@@ -224,13 +224,28 @@ void define_standard_headers(source_manager& sm) {
     sm.define_standard_headers("limits.h", "");
     sm.define_standard_headers("locale.h", "");
     sm.define_standard_headers("math.h", "");
-    sm.define_standard_headers("setjmp.h", "");
+    sm.define_standard_headers("setjmp.h", R"(
+#ifndef _SETJMP_H
+#define _SETJMP_H
+struct __jmp_buf;
+typedef struct __jmp_buf jmp_buf[1];
+#endif
+)");
     sm.define_standard_headers("signal.h", "");
     sm.define_standard_headers("stdalign.h", "");
     sm.define_standard_headers("stdarg.h", "");
     sm.define_standard_headers("stdatomic.h", "");
     sm.define_standard_headers("stdbool.h", "");
-    sm.define_standard_headers("stddef.h", "");
+    sm.define_standard_headers("stddef.h", R"(
+#ifndef _STDDEF_H
+#define _STDDEF_H
+typedef signed long long ptrdiff_t;
+typedef unsigned long long size_t;
+typedef unsigned short wchar_t;
+#define NULL ((void*)0)
+#define offsetof(type,member) ((size_t)&((type*)0)->member))
+#endif
+)");
     sm.define_standard_headers("stdint.h", R"(
 #ifndef _STDINT_H
 #define _STDINT_H
@@ -244,7 +259,14 @@ typedef unsigned int            uint32_t;
 typedef unsigned long long int  uint64_t;
 #endif
 )");
-    sm.define_standard_headers("stdio.h", "");
+    sm.define_standard_headers("stdio.h", R"(
+#ifndef _STDIO_H
+#define _STDIO_H
+#include <stddef.h>
+struct _FILE;
+typedef struct _FILE FILE;
+#endif
+)");
     sm.define_standard_headers("stdlib.h", "");
     sm.define_standard_headers("stdnoreturn.h", "");
     sm.define_standard_headers("string.h", "");
@@ -298,7 +320,8 @@ void define_posix_headers(source_manager& sm) {
     X(unsigned)        \
     X(void)            \
     X(volatile)        \
-    X(while)
+    X(while)           \
+    X(__attribute__)
 
 #define TOK_OPERATORS(X)  \
     X("!"   , not_)       \
@@ -476,6 +499,8 @@ enum class ctype {
     const_f    = 1<<13,
     restrict_f = 1<<14,
     volatile_f = 1<<15,
+
+    storage_f = extern_f | static_f | typedef_f | register_f,
 };
 
 ENUM_BIT_OPS(ctype)
@@ -912,18 +937,51 @@ std::ostream& operator<<(std::ostream& os, const array_info& ai) {
     }
 }
 
-class struct_info {
+class tag_info_type {
 public:
-    explicit struct_info(const std::string& id) : id_{id} {}
+    explicit tag_info_type(const std::string& id) : id_{id} {}
+    virtual ~tag_info_type() {}
 
     const std::string& id() const { return id_; }
-
+    virtual ctype base_type() const = 0;
 private:
     std::string id_;
 };
 
-std::ostream& operator<<(std::ostream& os, const struct_info& si) {
-    return os << "struct " << si.id();
+std::ostream& operator<<(std::ostream& os, const tag_info_type& tit) {
+    return os << tit.base_type()  << " " << tit.id();
+}
+
+class struct_info : public tag_info_type {
+public:
+    explicit struct_info(const std::string& id) : tag_info_type{id} {}
+    ctype base_type() const override { return ctype::struct_t; }
+};
+
+class union_info : public tag_info_type {
+public:
+    explicit union_info(const std::string& id) : tag_info_type{id} {}
+    ctype base_type() const override { return ctype::union_t; }
+};
+
+class enum_info : public tag_info_type {
+public:
+    explicit enum_info(const std::string& id) : tag_info_type{id} {}
+    ctype base_type() const override { return ctype::enum_t; }
+};
+
+std::shared_ptr<type> make_tag_type(const std::shared_ptr<tag_info_type>& tag_type, ctype flags) {
+    assert(!(flags & ctype::base_f));
+    const auto bt = tag_type->base_type();
+    if (bt == ctype::struct_t) {
+        return std::make_shared<type>(bt | flags, std::static_pointer_cast<struct_info>(tag_type));
+    } else if (bt == ctype::union_t) {
+        return std::make_shared<type>(bt | flags, std::static_pointer_cast<union_info>(tag_type));
+    } else if (bt == ctype::enum_t) {
+        return std::make_shared<type>(bt | flags, std::static_pointer_cast<enum_info>(tag_type));
+    } else {
+        NOT_IMPLEMENTED(flags << " " << *tag_type);
+    }
 }
 
 class function_info {
@@ -961,8 +1019,12 @@ std::ostream& operator<<(std::ostream& os, type t) {
     case ctype::struct_t:
         output_flags(os, t.ct());
         return os << "struct " << t.struct_val().id();
-    case ctype::union_t: NOT_IMPLEMENTED("union");
-    case ctype::enum_t: NOT_IMPLEMENTED("enum");
+    case ctype::union_t:
+        output_flags(os, t.ct());
+        return os << "union " << t.union_val().id();
+    case ctype::enum_t:
+        output_flags(os, t.ct());
+        return os << "enum " << t.enum_val().id();
     case ctype::function_t:
         output_flags(os, t.ct());
         return os << t.function_val();
@@ -992,11 +1054,11 @@ public:
 private:
     lexer lex_;
     int unnamed_cnt_ = 0;
-    std::vector<std::shared_ptr<struct_info>> structs_;
+    std::vector<std::shared_ptr<tag_info_type>> tag_types_;
     std::map<std::string, std::shared_ptr<type>> typedefs_;
 
-    std::shared_ptr<struct_info> find_struct(const std::string_view id) {
-        for (auto& s: structs_) {
+    std::shared_ptr<tag_info_type> find_tag_type(const std::string_view id) {
+        for (auto& s: tag_types_) {
             if (s->id() == id) {
                 return s;
             }
@@ -1036,22 +1098,39 @@ private:
             return;
         }
 
-        auto d = parse_declarator(ds);
-        EXPECT(semicolon);
+        for (;;) {
+            auto d = parse_declarator(ds);
 
-        std::cout << d << "\n";
-        if (!!(d.t()->ct() & ctype::typedef_f)) {
-            if (d.id().empty()) {
-                NOT_IMPLEMENTED(d);
+            if (!!(d.t()->ct() & ctype::typedef_f)) {
+                std::cout << d << "\n";
+                if (d.id().empty()) {
+                    NOT_IMPLEMENTED(d);
+                }
+                if (auto it = typedefs_.find(d.id()); it != typedefs_.end()) {
+                    NOT_IMPLEMENTED(d << " Already defined as " << it->first << " " << it->second);
+                }
+                auto t = std::make_shared<type>(*d.t());
+                t->remove_flags(ctype::typedef_f);
+                typedefs_[d.id()] = t;
+                break;
             }
-            if (auto it = typedefs_.find(d.id()); it != typedefs_.end()) {
-                NOT_IMPLEMENTED(d << " Already defined as " << it->first << " " << it->second);
+
+            if (current().type() == token_type::colon) {
+                // TODO: Bitfield
+                next();
+                parse_constant_expression();
+                std::cout << "Ignoring bitfield\n";
             }
-            auto t = std::make_shared<type>(*d.t());
-            t->remove_flags(ctype::typedef_f);
-            typedefs_[d.id()] = t;
-            return;
+
+            std::cout << d << "\n";
+
+            if (current().type() != token_type::comma) {
+                break;
+            }
+            next();
         }
+
+        EXPECT(semicolon);
 
         // init-declarator-list
         //    init-declarator
@@ -1118,7 +1197,24 @@ private:
             }
 
             if (is_function_specifier(t)) {
-                NOT_IMPLEMENTED(t);
+                std::cout << "Ignoring " << t << "\n";
+                next();
+                continue;
+            }
+
+            if (t == token_type::__attribute___) {
+                next();
+                EXPECT(lparen);
+                EXPECT(lparen);
+                if (current().type() != token_type::id) {
+                    NOT_IMPLEMENTED("__attribute__ " << current());
+                }
+                const auto id = current().text();
+                next();
+                EXPECT(rparen);
+                EXPECT(rparen);
+                std::cout << "Ignoring __attribute__((" << id << "))\n";
+                continue;
             }
 
             if (t == token_type::struct_
@@ -1130,28 +1226,46 @@ private:
                     NOT_IMPLEMENTED("Invalid decl " << *res_type << " and " << t);
                 }
 
-                std::shared_ptr<struct_info> struct_;
+                std::shared_ptr<tag_info_type> tag_type;
                 std::string id;
+
+                auto make_tag_info = [&]() {
+                    assert(!id.empty());
+                    assert(!find_tag_type(id));
+                    if (t == token_type::struct_)  {
+                        tag_type = std::make_shared<struct_info>(id);
+                    } else if (t == token_type::union_) {
+                        tag_type = std::make_shared<union_info>(id);
+                    } else if (t == token_type::enum_) {
+                        tag_type = std::make_shared<enum_info>(id);
+                    } else {
+                        NOT_IMPLEMENTED(t);
+                    }
+                    tag_types_.push_back(tag_type);
+                };
+
                 if (current().type() == token_type::id) {
                     id = current().text();
                     next();
 
-                    struct_ = find_struct(id);
-                    if (!struct_) {
-                        struct_ = std::make_shared<struct_info>(id);
-                        structs_.push_back(struct_);
+                    tag_type = find_tag_type(id);
+                    if (!tag_type) {
+                        make_tag_info();
                     }
                 }
                 if (current().type() == token_type::lbrace) {
                     next();
-                    parse_struct_declaration_list();
+                    if (t == token_type::enum_) {
+                        parse_enum_list();
+                    } else {
+                        parse_struct_declaration_list();
+                    }
                     EXPECT(rbrace);
-                    TRACE("Not using structure definition");
-                    if (!struct_) {
+                    TRACE("Not using " << t << " definition");
+                    if (!tag_type) {
                         assert(id.empty());
-                        id = "__unnamed_struct" + std::to_string(unnamed_cnt_++);
-                        struct_ = std::make_shared<struct_info>(id);
-                        structs_.push_back(struct_);
+                        id = "__unnamed" + std::to_string(unnamed_cnt_++);
+                        make_tag_info();
                     } else {
                         // TODO: Check that the struct hasn't been defined before
                     }
@@ -1159,8 +1273,8 @@ private:
                     NOT_IMPLEMENTED(current());
                 }
 
-                assert(struct_);
-                res_type = std::make_shared<type>(ctype::struct_t | res_type->ct(), struct_);
+                assert(tag_type);
+                res_type = make_tag_type(tag_type, res_type->ct());
                 continue;
             }
 
@@ -1194,10 +1308,10 @@ private:
             res_type->add_flags(ctype::unsigned_f);
         }
 
-        // short/int/long/long long
-        if (int_ == 1) {
+        // short int/int/long int/long long int
+        if (int_ == 0 || int_ == 1) {
             if (res_type->base() == ctype::none) {
-                if (long_ == 0) {
+                if (long_ == 0 && (int_ || sign != -1)) {
                     res_type->set_base_type(ctype::int_t);
                     return res_type;
                 } else if (long_ == 1) {
@@ -1238,6 +1352,7 @@ private:
     decl parse_direct_declarator(std::shared_ptr<type> t) {
         std::shared_ptr<type> inner_type{};
         std::string id;
+        const auto storage_flags = t->ct() & ctype::storage_f;
         if (current().type() == token_type::lparen) {
             next();
             auto decl = parse_declarator(std::make_shared<type>());
@@ -1252,12 +1367,14 @@ private:
             next();
             parse_assignment_expression(); // FIXME: Use result
             EXPECT(rbracket);
-            t = std::make_shared<type>(ctype::array_t, std::make_unique<array_info>(t, array_info::unbounded));
+            t->remove_flags(ctype::storage_f);
+            t = std::make_shared<type>(ctype::array_t | storage_flags, std::make_unique<array_info>(t, array_info::unbounded));
         } else if (current().type() == token_type::lparen) {
             next();
             auto arg_types = parse_parameter_type_list();
             EXPECT(rparen);
-            t = std::make_shared<type>(ctype::function_t, std::make_unique<function_info>(t, arg_types));
+            t->remove_flags(ctype::storage_f);
+            t = std::make_shared<type>(ctype::function_t | storage_flags, std::make_unique<function_info>(t, arg_types));
         }
         if (inner_type) {
             inner_type->modify_inner(t);
@@ -1268,17 +1385,22 @@ private:
 
     std::vector<decl> parse_parameter_type_list() {
         std::vector<decl> arg_types;
-        for (size_t cnt = 0;; ++cnt) {
-            const auto t = current().type();
-            if (t == token_type::rparen) {
-                break;
-            }
+        for (size_t cnt = 0; current().type() != token_type::rparen; ++cnt) {
             if (cnt) {
                 EXPECT(comma);
             }
-            const auto ds = parse_declaration_specifiers();
-            const auto d = parse_declarator(ds);
-            arg_types.push_back(d);
+            if (current().type() == token_type::ellipsis) {
+                std::cout << "TODO: Handle ellipsis\n";
+                arg_types.push_back(decl{std::make_shared<type>(), "..."});
+                next();
+            } else {
+                const auto ds = parse_declaration_specifiers();
+                const auto d = parse_declarator(ds);
+                if (d.t()->base() == ctype::none) {
+                    NOT_IMPLEMENTED(d);
+                }
+                arg_types.push_back(d);
+            }
         }
         return arg_types;
     }
@@ -1291,7 +1413,19 @@ private:
 
     void parse_enum_list() {
         while (current().type() != token_type::rbrace) {
-            NOT_IMPLEMENTED(current());
+            if (current().type() != token_type::id) {
+                NOT_IMPLEMENTED("Expected identifier got " << current());
+            }
+            const auto id = current().text();
+            next();
+            if (current().type() == token_type::eq) {
+                next();
+                parse_constant_expression();
+            }
+            if (current().type() != token_type::comma) {
+                break;
+            }
+            next();
         }
     }
 
@@ -1386,7 +1520,6 @@ private:
         //return std::move(lhs);
     }
 
-
     void parse_expression() {
         /*lhs=*/ parse_unary_expression();
         return parse_expression1(operator_precedence(token_type::comma));
@@ -1395,6 +1528,11 @@ private:
     void parse_assignment_expression() {
         /*lhs=*/ parse_unary_expression();
         return parse_expression1(operator_precedence(token_type::eq));
+    }
+
+    void parse_constant_expression() {
+        /*lhs=*/ parse_unary_expression();
+        return parse_expression1(operator_precedence(token_type::oror));
     }
 };
 
