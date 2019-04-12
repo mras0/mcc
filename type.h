@@ -59,6 +59,8 @@ constexpr ctype modified_base_type(ctype t, ctype new_base) {
 void output_flags(std::ostream& os, ctype t);
 std::ostream& operator<<(std::ostream& os, ctype t);
 
+ctype common_type(ctype l, ctype r);
+
 class array_info;
 class struct_info;
 class union_info;

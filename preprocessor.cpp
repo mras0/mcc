@@ -70,7 +70,7 @@ size_t punct_length(std::string_view s) {
         if (s[0] == s[1]) {
             return s.length() > 1 && s[2] == '=' ? 3 : 2;
         } else {
-            return s[1] == '=' ? 1 : 1;
+            return s[1] == '=' ? 2 : 1;
         }
     default: return 1;
     }

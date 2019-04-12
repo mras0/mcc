@@ -6,6 +6,26 @@
 
 namespace mcc {
 
+const_int_val const_int_eval(const expression& e) {
+    if (auto cie = dynamic_cast<const const_int_expression*>(&e)) {
+        return cie->val();
+    } else if (auto be = dynamic_cast<const binary_expression*>(&e)) {
+        auto l = const_int_eval(be->l());
+        auto r = const_int_eval(be->r());
+        const auto t = common_type(l.type, r.type);
+        l = cast(l, t);
+        r = cast(r, t);
+        switch (be->op()) {
+        case token_type::plus:  return const_int_val{l.val+r.val, t};
+        case token_type::minus: return const_int_val{l.val-r.val, t};
+        default:
+            NOT_IMPLEMENTED(l << " " << be->op() << " " << r);
+        }
+    }
+
+    NOT_IMPLEMENTED(e);
+}
+
 #define EXPECT(tok) do { if (current().type() != token_type::tok) NOT_IMPLEMENTED("Expected " << token_type::tok << " got " << current()); next(); } while (0)
 #define TRACE(msg) std::cout << __FILE__ << ":" << __LINE__ << ": " << __func__ <<  " Current: " << current() << " " << msg << "\n"
 
@@ -78,6 +98,7 @@ private:
             return;
         }
 
+        std::vector<decl> decls;
         for (;;) {
             auto d = parse_declarator(ds);
 
@@ -98,11 +119,11 @@ private:
             if (current().type() == token_type::colon) {
                 // TODO: Bitfield
                 next();
-                parse_constant_expression();
-                std::cout << "Ignoring bitfield\n";
+                auto e = parse_constant_expression();
+                std::cout << "Ignoring bitfield: " << *e << "\n";
             }
 
-            std::cout << d << "\n";
+            decls.push_back(d);
 
             if (current().type() != token_type::comma) {
                 break;
@@ -110,7 +131,11 @@ private:
             next();
         }
 
-        EXPECT(semicolon);
+        if (decls.size() != 1 || decls[0].t()->base() != ctype::function_t || current().type() != token_type::lbrace) {
+            EXPECT(semicolon);
+            return;
+        }
+        parse_compound_statement();
     }
 
     std::shared_ptr<type> parse_declaration_specifiers() {
@@ -394,7 +419,8 @@ private:
             next();
             if (current().type() == token_type::eq) {
                 next();
-                parse_constant_expression();
+                auto e = parse_constant_expression();
+                std::cout << "Ignoring " << id << " = " << const_int_eval(*e) << " in enum definition\n";
             }
             if (current().type() != token_type::comma) {
                 break;
@@ -407,29 +433,39 @@ private:
     // Expression
     //
 
-    void parse_primary_expression() {
+    expression_ptr parse_primary_expression() {
         // identifier
         // constant
         // string-literal
         // ( expression )
         const auto t = current().type();
         if (t == token_type::id) {
-            NOT_IMPLEMENTED(current());
-        } else if (is_literal(t)) {
-            TRACE("Consuming");
+            auto id = current().text();
             next();
-            return;
+            return std::make_unique<identifier_expression>(id);
+        } else if (t == token_type::const_int) {
+            const auto v = current().int_val();
+            next();
+            return std::make_unique<const_int_expression>(v);
+        } else if (t == token_type::const_float) {
+            NOT_IMPLEMENTED(t);
+        } else if (t == token_type::char_lit) {
+            const auto v = current().char_val();
+            next();
+            return std::make_unique<const_int_expression>(const_int_val{v, ctype::int_t});
+        } else if (t == token_type::string_lit) {
+            NOT_IMPLEMENTED(t);
         } else if (t == token_type::lparen) {
             next();
-            parse_expression();
+            auto e = parse_expression();
             EXPECT(rparen);
-            return;
+            return e;
         }
         NOT_IMPLEMENTED("Expected primary expression got " << current());
     }
 
-    void parse_postfix_expression() {
-        parse_primary_expression();
+    expression_ptr parse_postfix_expression() {
+        auto e = parse_primary_expression();
         const auto t = current().type();
         if (t == token_type::lbracket
             || t == token_type::lparen
@@ -439,9 +475,10 @@ private:
             || t == token_type::minusminus) {
             NOT_IMPLEMENTED(t);
         }
+        return e;
     }
 
-    void parse_unary_expression() {
+    expression_ptr parse_unary_expression() {
         const auto t = current().type();
         if (t == token_type::plusplus
             || t == token_type::minusminus) {
@@ -463,7 +500,7 @@ private:
         return parse_postfix_expression();
     }
 
-    void parse_expression1(/*expression_ptr&& lhs, */int outer_precedence) {
+    expression_ptr parse_expression1(expression_ptr&& lhs, int outer_precedence) {
         for (;;) {
             const auto op = current().type();
             const auto precedence = operator_precedence(op);
@@ -472,41 +509,86 @@ private:
             }
             next();
             if (op == token_type::question) {
-                NOT_IMPLEMENTED(current());
-                //auto l = parse_assignment_expression();
-                //EXPECT(token_type::colon);
-                //lhs = make_expression<conditional_expression>(std::move(lhs), std::move(l), parse_assignment_expression());
+                auto l = parse_assignment_expression();
+                EXPECT(colon);
+                lhs = std::make_unique<conditional_expression>(std::move(lhs), std::move(l), parse_assignment_expression());
                 continue;
             }
 
-            /*auto rhs = */parse_unary_expression();
+            auto rhs = parse_unary_expression();
             for (;;) {
                 const auto look_ahead = current().type();
                 const auto look_ahead_precedence = operator_precedence(look_ahead);
                 if (look_ahead_precedence > precedence /*|| (look_ahead_precedence == precedence && !is_right_to_left(look_ahead))*/) {
                     break;
                 }
-                /*rhs = */parse_expression1(/*std::move(rhs), */look_ahead_precedence);
+                rhs = parse_expression1(std::move(rhs), look_ahead_precedence);
             }
 
-            //lhs = make_expression<binary_expression>(op, std::move(lhs), std::move(rhs));
+            lhs = std::make_unique<binary_expression>(op, std::move(lhs), std::move(rhs));
         }
-        //return std::move(lhs);
+        return std::move(lhs);
     }
 
-    void parse_expression() {
-        /*lhs=*/ parse_unary_expression();
-        return parse_expression1(operator_precedence(token_type::comma));
+    expression_ptr parse_expression0(int precedence) {
+        return parse_expression1(parse_unary_expression(), precedence);
     }
 
-    void parse_assignment_expression() {
-        /*lhs=*/ parse_unary_expression();
-        return parse_expression1(operator_precedence(token_type::eq));
+    expression_ptr parse_expression() {
+        return parse_expression0(operator_precedence(token_type::comma));
     }
 
-    void parse_constant_expression() {
-        /*lhs=*/ parse_unary_expression();
-        return parse_expression1(operator_precedence(token_type::oror));
+    expression_ptr parse_assignment_expression() {
+        return parse_expression0(operator_precedence(token_type::eq));
+    }
+
+    expression_ptr parse_constant_expression() {
+        return parse_expression0(operator_precedence(token_type::oror));
+    }
+
+    //
+    // Statement
+    //
+
+    statement_ptr parse_statement() {
+        const auto t = current().type();
+        switch (t) {
+            // selection-statement
+        case token_type::if_: NOT_IMPLEMENTED(t);
+        case token_type::switch_: NOT_IMPLEMENTED(t);
+            // iteration-statement
+        case token_type::while_: NOT_IMPLEMENTED(t);
+        case token_type::do_: NOT_IMPLEMENTED(t);
+        case token_type::for_: NOT_IMPLEMENTED(t);
+            // jump-statement
+        case token_type::goto_: NOT_IMPLEMENTED(t);
+        case token_type::continue_: NOT_IMPLEMENTED(t);
+        case token_type::break_: NOT_IMPLEMENTED(t);
+        case token_type::return_:
+            next();
+            if (current().type() == token_type::semicolon) {
+                next();
+                return std::make_unique<return_statement>(nullptr);
+            } else {
+                auto e = parse_expression();
+                EXPECT(semicolon);
+                return std::make_unique<return_statement>(std::move(e));
+            }
+        default:
+            NOT_IMPLEMENTED(t);
+        }
+    }
+
+    std::unique_ptr<compound_statement> parse_compound_statement() {
+        std::vector<statement_ptr> ss;
+        EXPECT(lbrace);
+        while (current().type() != token_type::rbrace) {
+            ss.push_back(parse_statement());
+            std::cout << *ss.back() << "\n";
+        }
+        assert(current().type() == token_type::rbrace);
+        next();
+        return std::make_unique<compound_statement>(std::move(ss));
     }
 };
 

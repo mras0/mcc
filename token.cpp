@@ -99,6 +99,13 @@ std::ostream& operator<<(std::ostream& os, const_int_val civ) {
     return os;
 }
 
+const_int_val cast(const const_int_val& val, ctype new_type) {
+    if (val.type == new_type) {
+        return val;
+    }
+    NOT_IMPLEMENTED(val << " " << new_type);
+}
+
 std::ostream& operator<<(std::ostream& os, const token& t) {
     switch (t.type()) {
     case token_type::id: return os << "id:" << t.text();

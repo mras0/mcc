@@ -45,6 +45,13 @@ std::ostream& operator<<(std::ostream& os, ctype t) {
     NOT_IMPLEMENTED(static_cast<uint32_t>(t & ctype::base_f));
 }
 
+ctype common_type(ctype l, ctype r) {
+    if (l == r) {
+        return l;
+    }
+    NOT_IMPLEMENTED(l << " " << r);
+}
+
 void type::modify_inner(const std::shared_ptr<const type>& t) {
     if (base() == ctype::pointer_t) {
         auto& pointed_type = std::get<1>(val_);

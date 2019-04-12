@@ -123,6 +123,7 @@ struct const_int_val {
 };
 
 std::ostream& operator<<(std::ostream& os, const_int_val civ);
+const_int_val cast(const const_int_val& val, ctype new_type);
 
 class token {
 public:
