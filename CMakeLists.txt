@@ -49,6 +49,6 @@ if (WIN32)
     add_definitions("-DWIN32 -D_WIN32 -DUNICODE -D_UNICODE")
 endif()
 
-add_library(mcc_lib STATIC util.cpp util.h source.cpp source.h preprocessor.cpp preprocessor.h)
+add_library(mcc_lib STATIC util.cpp util.h source.cpp source.h preprocessor.cpp preprocessor.h enum_ops.h token.cpp token.h type.cpp type.h lexer.cpp lexer.h parser.cpp parser.h)
 add_executable(mcc main.cpp)
 target_link_libraries(mcc mcc_lib)

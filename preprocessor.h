@@ -67,6 +67,9 @@ private:
     std::unique_ptr<impl> impl_;
 };
 
+void define_standard_headers(source_manager& sm);
+void define_posix_headers(source_manager& sm);
+
 }
 
 #endif
