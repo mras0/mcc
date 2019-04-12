@@ -41,8 +41,9 @@ enum class ctype {
     const_f    = 1<<13,
     restrict_f = 1<<14,
     volatile_f = 1<<15,
+    inline_f   = 1<<16,
 
-    storage_f = extern_f | static_f | typedef_f | register_f,
+    storage_f = extern_f | static_f | typedef_f | register_f | inline_f,
 };
 
 ENUM_BIT_OPS(ctype)
@@ -117,7 +118,7 @@ public:
         t_ &= ~flags;
     }
 
-    void modify_inner(const std::shared_ptr<type>& t);
+    void modify_inner(const std::shared_ptr<const type>& t);
 
     const type& pointer_val() const {
         assert(base_type(t_) == ctype::pointer_t);
@@ -162,6 +163,8 @@ private:
 };
 
 std::ostream& operator<<(std::ostream& os, type t);
+
+void output_decl(std::ostream& os, const std::string& id, const type& t);
 
 class decl {
 public:

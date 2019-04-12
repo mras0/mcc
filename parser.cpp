@@ -168,8 +168,8 @@ private:
                 continue;
             }
 
-            if (is_function_specifier(t)) {
-                std::cout << "Ignoring " << t << "\n";
+            if (t == token_type::inline_) {
+                res_type->add_flags(ctype::inline_f);
                 next();
                 continue;
             }
@@ -307,7 +307,7 @@ private:
         NOT_IMPLEMENTED(*res_type << " long: " << long_ << " int: " << int_ << " sign: " << sign << " current: " << current());
     }
 
-    decl parse_declarator(std::shared_ptr<type> t) {
+    decl parse_declarator(std::shared_ptr<const type> t) {
         // '*' type-qualifier-list? pointer?
         while (current().type() == token_type::star) {
             next();
@@ -321,7 +321,7 @@ private:
         return parse_direct_declarator(t);
     }
 
-    decl parse_direct_declarator(std::shared_ptr<type> t) {
+    decl parse_direct_declarator(std::shared_ptr<const type> t) {
         std::shared_ptr<type> inner_type{};
         std::string id;
         const auto storage_flags = t->ct() & ctype::storage_f;
@@ -339,14 +339,16 @@ private:
             next();
             parse_assignment_expression(); // FIXME: Use result
             EXPECT(rbracket);
-            t->remove_flags(ctype::storage_f);
-            t = std::make_shared<type>(ctype::array_t | storage_flags, std::make_unique<array_info>(t, array_info::unbounded));
+            auto array_type = std::make_shared<type>(*t);
+            array_type->remove_flags(ctype::storage_f);
+            t = std::make_shared<type>(ctype::array_t | storage_flags, std::make_unique<array_info>(array_type, array_info::unbounded));
         } else if (current().type() == token_type::lparen) {
             next();
             auto arg_types = parse_parameter_type_list();
             EXPECT(rparen);
-            t->remove_flags(ctype::storage_f);
-            t = std::make_shared<type>(ctype::function_t | storage_flags, std::make_unique<function_info>(t, arg_types));
+            auto return_type = std::make_shared<type>(*t);
+            return_type->remove_flags(ctype::storage_f);
+            t = std::make_shared<type>(ctype::function_t | storage_flags, std::make_unique<function_info>(return_type, arg_types));
         }
         if (inner_type) {
             inner_type->modify_inner(t);

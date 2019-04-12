@@ -6,6 +6,7 @@ namespace mcc {
 
 void output_flags(std::ostream& os, ctype t) {
 #define CHECK_FLAG(f) if (!!(t & ctype::f##_f)) os << #f " "
+    CHECK_FLAG(inline);
     CHECK_FLAG(extern);
     CHECK_FLAG(static);
     CHECK_FLAG(typedef);
@@ -44,7 +45,7 @@ std::ostream& operator<<(std::ostream& os, ctype t) {
     NOT_IMPLEMENTED(static_cast<uint32_t>(t & ctype::base_f));
 }
 
-void type::modify_inner(const std::shared_ptr<type>& t) {
+void type::modify_inner(const std::shared_ptr<const type>& t) {
     if (base() == ctype::pointer_t) {
         auto& pointed_type = std::get<1>(val_);
         if (pointed_type->ct() != ctype::none) {
@@ -83,8 +84,57 @@ std::ostream& operator<<(std::ostream& os, type t) {
     }
 }
 
+void output_decl(std::ostream& os, const std::string& id, const type& t) {
+    switch (t.base()) {
+    case ctype::pointer_t:
+    {
+        const auto& pointee = t.pointer_val();
+        const bool need_paren = pointee.base() == ctype::array_t || pointee.base() == ctype::function_t;
+        std::ostringstream oss;
+        if (need_paren) {
+            oss << "(";
+        }
+        oss << "* ";
+        output_flags(os, t.ct());
+        oss << id;
+        if (need_paren) {
+            oss << ")";
+        }
+        output_decl(os, oss.str(), pointee);
+        break;
+    }
+    case ctype::array_t:
+    {
+        const auto& ai = t.array_val();
+        output_flags(os, t.ct());
+        os << *ai.t() << " " << id << "[";
+        if (ai.bound() != array_info::unbounded) {
+            os << ai.bound();
+        }
+        os << "]";
+        break;
+    }
+    case ctype::function_t:
+    {
+        const auto& fi = t.function_val();
+        output_flags(os, t.ct());
+        os << *fi.ret_type() << " " << id << "(";
+        for (size_t i = 0; i < fi.params().size(); ++i) {
+            if (i) os << ", ";
+            os << fi.params()[i];
+        }
+        os << ")";
+        break;
+    }
+    default:
+        os << t << " " << id;
+        break;
+    }
+}
+
 std::ostream& operator<<(std::ostream& os, const decl& d) {
-    return os << *d.t() << " " << d.id();
+    output_decl(os, d.id(), *d.t());
+    return os;
 }
 
 std::ostream& operator<<(std::ostream& os, const array_info& ai) {

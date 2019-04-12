@@ -197,10 +197,6 @@ inline bool is_type_qualifier(token_type t) {
         || t == token_type::volatile_;
 }
 
-inline bool is_function_specifier(token_type t) {
-    return t == token_type::inline_;
-}
-
 inline bool is_literal(token_type t) {
     return t == token_type::const_int
         || t == token_type::const_float
