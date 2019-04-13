@@ -26,7 +26,7 @@ std::ostream& operator<<(std::ostream& os, const std::vector<pp_token>& v) {
 void test_preprocessor() {
     auto do_pp = [](const std::string& text) {
             const source_file source{"test", text};
-            source_manager sm;
+            source_manager sm{""};
             preprocessor pp{sm, source};
             std::vector<pp_token> res;
             for (pp_token tok; !!(tok = pp.current()); pp.next()) {
@@ -181,6 +181,7 @@ IS_PAREN(xxx) // Expands to 0
 )", { PP_NUM(123) }},
 
     { "#define BLAH(pf,sf) pf ## cc ## sf\nBLAH(,s)\nBLAH(p,)\n", {PP_ID(ccs), PP_ID(pcc)}},
+    { "#define X(name) table_ ## name\nX(286_0f)\n", {PP_ID(table_286_0f)}},
     };
 
     const char* delim = "-----------------------------------\n";
@@ -214,11 +215,16 @@ IS_PAREN(xxx) // Expands to 0
 void process_one(source_manager& sm, const std::string& filename) {
     std::cout << filename << "\n";
     auto decls = parse(sm, sm.load(filename));
+    (void)decls;
+#if 1
     for (const auto& d: decls) {
         if (d->d().t()->base() == ctype::function_t) {
             std::cout << *d << "\n";
+        } else {
+            std::cout << d->d() << "\n";
         }
     }
+#endif
 }
 
 int main(int argc, char* argv[]) {
@@ -228,13 +234,25 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        source_manager sm;
+        source_manager sm{standard_builtin_text()};
+        std::vector<std::string> files;
+        for (int i = 1; i < argc; ++i) {
+            const auto a = std::string_view{argv[i]};
+            if (a == "-I") {
+                if (++i == argc) NOT_IMPLEMENTED("Missing argument for -I");
+                sm.add_include_directory(argv[i]);
+            } else {
+                auto fs = process_wild_cards(a);
+                files.insert(files.end(), fs.begin(), fs.end());
+            }
+        }
+        if (files.empty()) {
+            NOT_IMPLEMENTED("No files found");
+        }
         define_standard_headers(sm);
         define_posix_headers(sm);
-        for (int i = 1; i < argc; ++i) {
-            for (const auto& f: process_wild_cards(argv[i])) {
-                process_one(sm, f);
-            }
+        for (const auto& f: files) {
+            process_one(sm, f);
         }
     } catch (const std::exception& e) {
         std::cerr << e.what() << "\n";

@@ -42,25 +42,24 @@ std::ostream& operator<<(std::ostream& os, const source_position& pos);
  
 class source_manager {
 public:
-    explicit source_manager() {}
+    explicit source_manager(const std::string& builtin_text) : builtin_{std::make_unique<source_file>("<builtin>", builtin_text)} {}
 
-    void define_standard_headers(const std::string& name, const std::string& contents) {
-        standard_headers_.push_back(std::make_unique<source_file>(name, contents));
-    }
-
+    void define_standard_headers(const std::string& name, const std::string& contents);
     void add_include_directory(const std::string& dir);
 
     const source_file& include(const std::string& included_from, const std::string_view filename);
     const source_file& load(const std::string_view filename);
+    const source_file& builtin() { return *builtin_; }
 
 private:
     std::vector<std::unique_ptr<source_file>> files_;
     std::vector<std::unique_ptr<source_file>> standard_headers_;
     std::vector<std::string> include_directories_;
     std::string base_dir_;
+    std::unique_ptr<source_file> builtin_;
 };
 
-std::vector<std::string> process_wild_cards(const std::string& name);
+std::vector<std::string> process_wild_cards(const std::string_view name);
 
 }
 

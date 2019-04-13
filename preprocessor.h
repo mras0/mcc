@@ -69,6 +69,7 @@ private:
 
 void define_standard_headers(source_manager& sm);
 void define_posix_headers(source_manager& sm);
+const char* standard_builtin_text();
 
 }
 

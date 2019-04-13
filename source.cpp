@@ -2,6 +2,7 @@
 #include "util.h"
 #include <fstream>
 #include <streambuf>
+#include <algorithm>
 
 #include <io.h> // _findfirst
 
@@ -45,6 +46,11 @@ std::string normalize_filename(const std::string_view f) {
     }
 #endif
     return cpy;
+}
+
+void source_manager::define_standard_headers(const std::string& name, const std::string& contents) {
+    assert(std::find_if(standard_headers_.begin(), standard_headers_.end(), [&](auto& sh) { return sh->name() == name; }) == standard_headers_.end());
+    standard_headers_.push_back(std::make_unique<source_file>(name, contents));
 }
 
 void source_manager::add_include_directory(const std::string& dir) {
@@ -120,7 +126,7 @@ private:
     intptr_t handle_;
 };
 
-std::vector<std::string> process_wild_cards(const std::string& name) {
+std::vector<std::string> process_wild_cards(const std::string_view name) {
     auto n = normalize_filename(name);
     if (n.find_first_of("?*") == std::string::npos) {
         return {n};

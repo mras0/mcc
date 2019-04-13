@@ -84,6 +84,7 @@ constexpr uint8_t bitfield_value(ctype t) {
 
 void output_flags(std::ostream& os, ctype t);
 
+ctype integral_promotion(ctype t);
 ctype common_type(ctype l, ctype r);
 
 class array_info;
@@ -297,6 +298,11 @@ private:
 std::ostream& operator<<(std::ostream& os, const function_info& fi);
 
 std::shared_ptr<type> make_tag_type(const std::shared_ptr<tag_info_type>& tag_type, ctype flags);
+
+inline const auto& struct_union_members(const type& t) {
+    assert(t.base() == ctype::struct_t || t.base() == ctype::union_t);
+    return t.base() == ctype::struct_t ? t.struct_val().members() : t.union_val().members();
+}
 
 } // namespace mcc
 

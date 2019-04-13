@@ -378,6 +378,7 @@ class preprocessor::impl {
 public:
     explicit impl(source_manager& sm, const source_file& source) : sm_{sm} {
         files_.push_back(std::make_unique<pp_lexer>(source));
+        files_.push_back(std::make_unique<pp_lexer>(sm.builtin()));
         next();
     }
 
@@ -916,8 +917,12 @@ private:
                         } else if (combine_state == combine_paste) {
                             if (!replacement.empty() && !nts.empty()) {
                                 auto last = replacement.back();
-                                replacement.back() = pp_token{ last.type(), last.text() + nts.front().text() };
-                                nts.erase(nts.begin());
+                                std::string text = last.text();
+                                for (const auto& nt: nts) {
+                                    text += nt.text();
+                                }
+                                nts.clear();
+                                replacement.back() = pp_token{ last.type(), text };
                             }
                         } else {
                             // Expand macros in argument now that we know it's not being combined/stringified
@@ -1101,7 +1106,6 @@ void preprocessor::next() {
     impl_->next();
 }
 
-
 void define_standard_headers(source_manager& sm) {
     sm.define_standard_headers("assert.h", "");
     sm.define_standard_headers("complex.h", "");
@@ -1202,7 +1206,13 @@ void define_posix_headers(source_manager& sm) {
     sm.define_standard_headers("unistd.h", "");
     sm.define_standard_headers("sys/stat.h", "");
     sm.define_standard_headers("sys/time.h", "");
+    sm.define_standard_headers("sys/types.h", "");
+}
+
+const char* standard_builtin_text() {
+    return R"(
+#define __amd64__ 1
+)";
 }
 
 }
-

@@ -57,6 +57,11 @@ public:
             push_scope global_scope{*this};
             std::vector<std::unique_ptr<init_decl>> res;
             while (current().type() != token_type::eof) {
+                if (current().type() == token_type::semicolon) {
+                    std::cout << "Ignoring stray semicolon at " << lex_.position()[0] << "\n";
+                    next();
+                    continue;
+                }
                 auto d = parse_declaration();
                 add_scope_decls(d);
                 res.insert(res.end(), std::make_move_iterator(d.begin()), std::make_move_iterator(d.end()));
@@ -524,7 +529,9 @@ private:
             t = std::make_shared<type>(ctype::function_t | storage_flags, std::move(fi));
         }
         if (inner_type) {
+            inner_type->remove_flags(ctype::storage_f);
             inner_type->modify_inner(t);
+            inner_type->add_flags(storage_flags);
             t = inner_type;
         }
         return decl{t, id};
@@ -533,7 +540,7 @@ private:
     std::unique_ptr<function_info> parse_parameter_type_list(std::shared_ptr<type>&& return_type) {
         std::vector<decl> arg_types;
         bool variadic = false;
-        for (;;) {
+        while (current().type() != token_type::rparen) {
             if (current().type() == token_type::ellipsis) {
                 next();
                 variadic = true;
@@ -725,7 +732,15 @@ private:
             if (is_current_type_name()) {
                 auto cast_type = parse_type_name();
                 EXPECT(rparen);
-                return std::make_unique<cast_expression>(cast_type, parse_cast_expression());
+                expression_ptr e;
+                if (current().type() == token_type::lbrace) {
+                    // Bit of a hack to support compound literals
+                    e = parse_initializer();
+                    assert(dynamic_cast<initializer_expression*>(e.get()));
+                } else {
+                    e = parse_cast_expression();
+                }
+                return std::make_unique<cast_expression>(cast_type, std::move(e));
             } else {
                 auto e = parse_expression();
                 EXPECT(rparen);
@@ -846,6 +861,7 @@ private:
                 EXPECT(lparen);
                 auto cond = parse_expression();
                 EXPECT(rparen);
+                EXPECT(semicolon);
                 return std::make_unique<do_statement>(std::move(cond), std::move(s));
             }
         case token_type::for_:
@@ -943,6 +959,7 @@ private:
     const_int_val const_int_lookup(const std::string& id);
     const_int_val const_int_eval(const expression& e);
     std::shared_ptr<const type> expression_type(const expression& e);
+    size_t alignof_type(const type& t);
     size_t sizeof_type(const type& t);
 };
 
@@ -992,11 +1009,22 @@ const_int_val parser::const_int_eval(const expression& e) {
         l = cast(l, t);
         r = cast(r, t);
         switch (be->op()) {
-        case token_type::plus:  return const_int_val{l.val+r.val, t};
-        case token_type::minus: return const_int_val{l.val-r.val, t};
-        case token_type::star:  return const_int_val{l.val*r.val, t};
-        case token_type::div:   if (!r.val) NOT_IMPLEMENTED("Division by zero"); return const_int_val{l.val/r.val, t};
-        case token_type::mod:   if (!r.val) NOT_IMPLEMENTED("Division by zero"); return const_int_val{l.val%r.val, t};
+#define DO(op) return const_int_val{!(t & ctype::unsigned_f) ? static_cast<uint64_t>(static_cast<int64_t>(l.val) op static_cast<int64_t>(r.val)): l.val op r.val, t}
+#define DO_DIV(op) if (!r.val) NOT_IMPLEMENTED("Division by zero"); DO(op)
+        case token_type::plus:   DO(+);
+        case token_type::minus:  DO(-);
+        case token_type::star:   DO(*);
+        case token_type::div:    DO_DIV(/);
+        case token_type::mod:    DO_DIV(%);
+        case token_type::lt:     DO(< );
+        case token_type::lteq:   DO(<=);
+        case token_type::gteq:   DO(>=);
+        case token_type::gt:     DO(> );
+        case token_type::eqeq:   DO(==);
+        case token_type::noteq:  DO(!=);
+        case token_type::lshift: DO(<<);
+        case token_type::rshift: DO(>>);
+#undef DO
         default:
             NOT_IMPLEMENTED(l << " " << be->op() << " " << r);
         }
@@ -1005,6 +1033,12 @@ const_int_val parser::const_int_eval(const expression& e) {
             NOT_IMPLEMENTED("sizeof " << *se->t());
         } else {
             return const_int_val{sizeof_type(*expression_type(se->e())), ctype::long_long_t | ctype::unsigned_f};
+        }
+    } else if (auto ce = dynamic_cast<const conditional_expression*>(&e)) {
+        if (const_int_eval(ce->cond()).val) {
+            return const_int_eval(ce->l());
+        } else {
+            return const_int_eval(ce->r());
         }
     }
 
@@ -1021,8 +1055,7 @@ std::shared_ptr<const type> parser::expression_type(const expression& e) {
             t = t->pointer_val();
         }
         if (t->base() == ctype::struct_t || t->base() == ctype::union_t) {
-            const auto& members = t->base() == ctype::struct_t ? t->struct_val().members() : t->union_val().members();
-            for (const auto& m: members) {
+            for (const auto& m: struct_union_members(*t)) {
                 if (m.id() == ae->id()) {
                     return m.t();
                 }
@@ -1035,8 +1068,29 @@ std::shared_ptr<const type> parser::expression_type(const expression& e) {
     NOT_IMPLEMENTED(e);
 }
 
+size_t parser::alignof_type(const type& t) {
+    const auto base = t.base();
+    if (is_arithmetic(base) || base == ctype::pointer_t) {
+        return sizeof_type(t);
+    } else if (base == ctype::struct_t || base == ctype::union_t) {
+        size_t align = 1;
+        for (const auto& m: struct_union_members(t)) {
+            align = std::max(align, alignof_type(*m.t()));
+        }
+        return align;
+    } else if (base == ctype::array_t) {
+        return alignof_type(*t.array_val().t());
+    }
+
+    NOT_IMPLEMENTED(t);
+}
+
+constexpr size_t round_up(size_t val, size_t align) {
+    return (val + align - 1) & ~(align - 1);
+}
+
 size_t parser::sizeof_type(const type& t) {
-    const size_t pointer_size = 8;
+    constexpr size_t pointer_size = 8;
     switch (t.base()) {
     case ctype::void_t:         NOT_IMPLEMENTED(t);
     case ctype::plain_char_t:   return 1;
@@ -1053,10 +1107,30 @@ size_t parser::sizeof_type(const type& t) {
         if (const auto& ai = t.array_val(); ai.bound() == array_info::unbounded) {
             return pointer_size;
         } else {
+            if (ai.bound() == 0) {
+                NOT_IMPLEMENTED(t);
+            }
             return ai.bound() * sizeof_type(*ai.t());
         }
-    case ctype::struct_t:       NOT_IMPLEMENTED(t);
-    case ctype::union_t:        NOT_IMPLEMENTED(t);
+    case ctype::struct_t:
+        {
+            size_t size = 0;
+            size_t max_align = 1;
+            for (const auto& m: t.struct_val().members()) {
+                const auto a = alignof_type(*m.t());
+                size = round_up(size, a) + sizeof_type(*m.t());
+                max_align = std::max(max_align, a);
+            }
+            return round_up(size, max_align);
+        }
+    case ctype::union_t:
+        {
+            size_t size = 0;
+            for (const auto& m: t.union_val().members()) {
+                size = std::max(size, sizeof_type(*m.t()));                
+            }
+            return size;
+        }
     case ctype::enum_t:         NOT_IMPLEMENTED(t);
     case ctype::function_t:     NOT_IMPLEMENTED(t);
     default:

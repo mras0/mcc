@@ -50,11 +50,43 @@ std::ostream& operator<<(std::ostream& os, ctype t) {
     return os;
 }
 
+ctype integral_promotion(ctype t) {
+    assert(is_integral(t));
+    if (t < ctype::int_t) {
+        NOT_IMPLEMENTED(t);
+    }
+    return t;
+}
+
 ctype common_type(ctype l, ctype r) {
     if (l == r) {
         return l;
     }
-    NOT_IMPLEMENTED(l << " " << r);
+    if (!is_integral(l) || !is_integral(r)) {
+        NOT_IMPLEMENTED(l << " <> " << r);
+    }
+    // First perform integral promotion
+    l = integral_promotion(l);
+    r = integral_promotion(r);
+    // If the types are the same, we're done
+    if (l == r) {
+        return l;
+    }
+    const auto bl = base_type(l);
+    const auto br = base_type(r);
+    // If both have the same signedless
+    if ((l & ctype::unsigned_f) == (r & ctype::unsigned_f)) {
+        NOT_IMPLEMENTED(l << " <> " << r << " max_rank: " << (bl < br ? r : l));
+        return bl < br ? r : l;
+    }
+    // Signs are different
+    const auto [urank, srank] = !!(l & ctype::unsigned_f) ? std::pair{ bl, br } : std::pair{ br, bl };
+    if (urank > srank) {
+        // Unsigned operand's rank is greater
+        return urank | ctype::unsigned_f;
+    }
+    
+    NOT_IMPLEMENTED(l << " <> " << r << " urank: " << urank << " srank: " << srank);
 }
 
 void type::modify_inner(const std::shared_ptr<const type>& t) {
@@ -64,6 +96,9 @@ void type::modify_inner(const std::shared_ptr<const type>& t) {
             NOT_IMPLEMENTED(*this << " " << *pointed_type);
         }
         val_ = t;
+    } else if (base() == ctype::array_t) {
+        auto& ai = std::get<2>(val_);
+        const_cast<type*>(ai->t().get())->modify_inner(t);
     } else {
         NOT_IMPLEMENTED(*this << " " << *t);
     }        
