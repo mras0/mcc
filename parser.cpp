@@ -18,6 +18,9 @@ const_int_val const_int_eval(const expression& e) {
         switch (be->op()) {
         case token_type::plus:  return const_int_val{l.val+r.val, t};
         case token_type::minus: return const_int_val{l.val-r.val, t};
+        case token_type::star:  return const_int_val{l.val*r.val, t};
+        case token_type::div:   if (!r.val) NOT_IMPLEMENTED("Division by zero"); return const_int_val{l.val/r.val, t};
+        case token_type::mod:   if (!r.val) NOT_IMPLEMENTED("Division by zero"); return const_int_val{l.val%r.val, t};
         default:
             NOT_IMPLEMENTED(l << " " << be->op() << " " << r);
         }
@@ -68,6 +71,7 @@ private:
     }
 
     void next() {
+        //std::cout << "Consuming " << current() << "\n";
         assert(current().type() != token_type::eof);
         lex_.next();
     }
@@ -76,7 +80,26 @@ private:
         return lex_.current();
     }
 
-    void parse_declaration() {
+    bool is_current_type_name() const {
+        const auto t = current().type();
+        if (t == token_type::id) {
+            auto id = current().text();
+            if (find_typedef(id)) {
+                return true;
+            }
+            return false;
+        }
+        if (is_literal(t)) {
+            return false;
+        }
+        if (is_storage_class_specifier(t) || is_type_qualifier(t) || is_type_qualifier(t) || is_simple_type_specifier(t)) {
+            NOT_IMPLEMENTED(t);
+            return true;
+        }
+        return false;
+    }
+
+    std::vector<decl> parse_declaration() {
         // declaration
         //    declaration_specifiers init-declarator-list? ';'
         // init-declarator-list
@@ -91,11 +114,10 @@ private:
         if (current().type() == token_type::semicolon) {
             // Type decl.
             if (!!(ds->ct() & ctype::typedef_f)) {
-                NOT_IMPLEMENTED(ds);
+                NOT_IMPLEMENTED(*ds);
             }
-            std::cout << *ds << "\n";
             next();
-            return;
+            return {};
         }
 
         std::vector<decl> decls;
@@ -103,7 +125,6 @@ private:
             auto d = parse_declarator(ds);
 
             if (!!(d.t()->ct() & ctype::typedef_f)) {
-                std::cout << d << "\n";
                 if (d.id().empty()) {
                     NOT_IMPLEMENTED(d);
                 }
@@ -133,9 +154,11 @@ private:
 
         if (decls.size() != 1 || decls[0].t()->base() != ctype::function_t || current().type() != token_type::lbrace) {
             EXPECT(semicolon);
-            return;
+            return decls;
         }
-        parse_compound_statement();
+        std::cout << "Ignoring function body of " << decls[0] << "\n";
+        (void)parse_compound_statement();
+        return decls;
     }
 
     std::shared_ptr<type> parse_declaration_specifiers() {
@@ -252,20 +275,25 @@ private:
                 }
                 if (current().type() == token_type::lbrace) {
                     next();
-                    if (t == token_type::enum_) {
-                        parse_enum_list();
-                    } else {
-                        parse_struct_declaration_list();
-                    }
-                    EXPECT(rbrace);
-                    TRACE("Not using " << t << " definition");
                     if (!tag_type) {
                         assert(id.empty());
                         id = "__unnamed" + std::to_string(unnamed_cnt_++);
                         make_tag_info();
-                    } else {
-                        // TODO: Check that the struct hasn't been defined before
                     }
+                    if (t == token_type::enum_) {
+                        auto& eivs = dynamic_cast<enum_info&>(*tag_type).values_;
+                        if (!eivs.empty()) {
+                            NOT_IMPLEMENTED("Redefinition of " << t << " " << id);
+                        }
+                        eivs = parse_enum_list();
+                    } else {
+                        auto& sds = t == token_type::struct_ ? dynamic_cast<struct_info&>(*tag_type).members_ : dynamic_cast<union_info&>(*tag_type).members_;
+                        if (!sds.empty()) {
+                            NOT_IMPLEMENTED("Redefinition of " << t << " " << id);
+                        }
+                        sds = parse_struct_declaration_list();
+                    }
+                    EXPECT(rbrace);
                 } else if (id.empty()) {
                     NOT_IMPLEMENTED(current());
                 }
@@ -361,12 +389,19 @@ private:
             next();
         }
         if (current().type() == token_type::lbracket) {
+            auto bound = array_info::unbounded;
             next();
-            parse_assignment_expression(); // FIXME: Use result
+            if (current().type() != token_type::rbracket) {
+                auto civ = const_int_eval(*parse_assignment_expression());
+                bound = cast(civ, ctype::long_long_t|ctype::unsigned_f).val;
+                if (civ.val > bound) {
+                    NOT_IMPLEMENTED(civ << " ~~ " << bound  << " array bound was negative?");
+                }
+            }
             EXPECT(rbracket);
             auto array_type = std::make_shared<type>(*t);
             array_type->remove_flags(ctype::storage_f);
-            t = std::make_shared<type>(ctype::array_t | storage_flags, std::make_unique<array_info>(array_type, array_info::unbounded));
+            t = std::make_shared<type>(ctype::array_t | storage_flags, std::make_unique<array_info>(array_type, bound));
         } else if (current().type() == token_type::lparen) {
             next();
             auto arg_types = parse_parameter_type_list();
@@ -404,14 +439,18 @@ private:
         return arg_types;
     }
 
-    void parse_struct_declaration_list() {
+    std::vector<decl> parse_struct_declaration_list() {
+        std::vector<decl> decls;
         while (current().type() != token_type::rbrace) {
-            parse_declaration();
+            auto ds = parse_declaration();
+            decls.insert(decls.end(), ds.begin(), ds.end());
         }
+        return decls;
     }
 
-    void parse_enum_list() {
-        while (current().type() != token_type::rbrace) {
+    std::vector<enum_value> parse_enum_list() {
+        std::vector<enum_value> vals;        
+        for (int64_t val = 0; current().type() != token_type::rbrace; ++val) {
             if (current().type() != token_type::id) {
                 NOT_IMPLEMENTED("Expected identifier got " << current());
             }
@@ -420,13 +459,25 @@ private:
             if (current().type() == token_type::eq) {
                 next();
                 auto e = parse_constant_expression();
-                std::cout << "Ignoring " << id << " = " << const_int_eval(*e) << " in enum definition\n";
+                val = cast(const_int_eval(*e), ctype::long_long_t).val;
             }
+            vals.push_back(enum_value{id, val});
             if (current().type() != token_type::comma) {
                 break;
             }
             next();
         }
+        return vals;
+    }
+
+    std::shared_ptr<type> parse_type_name() {
+        // type-name
+        //   specifier-qualifier-list  abstract-declarator?
+        auto ds = parse_declaration_specifiers();
+        if (current().type() != token_type::rparen) {
+            NOT_IMPLEMENTED(*ds << " " << current());
+        }
+        return ds;
     }
 
     //
@@ -467,8 +518,12 @@ private:
     expression_ptr parse_postfix_expression() {
         auto e = parse_primary_expression();
         const auto t = current().type();
-        if (t == token_type::lbracket
-            || t == token_type::lparen
+        if (t == token_type::lbracket) {
+            next();
+            auto index = parse_expression();
+            EXPECT(rbracket);
+            return std::make_unique<array_access_expression>(std::move(e), std::move(index));
+        } else if (t == token_type::lparen
             || t == token_type::dot
             || t == token_type::arrow
             || t == token_type::plusplus
@@ -500,6 +555,23 @@ private:
         return parse_postfix_expression();
     }
 
+    expression_ptr parse_cast_expression() {
+        if (current().type() == token_type::lparen) {
+            next();
+            expression_ptr e;
+            if (is_current_type_name()) {
+                auto cast_type = parse_type_name();
+                EXPECT(rparen);
+                e = std::make_unique<cast_expression>(cast_type, parse_cast_expression());
+            } else {
+                e = parse_expression();
+                EXPECT(rparen);
+            }
+            return e;
+        }
+        return parse_unary_expression();
+    }
+
     expression_ptr parse_expression1(expression_ptr&& lhs, int outer_precedence) {
         for (;;) {
             const auto op = current().type();
@@ -515,7 +587,7 @@ private:
                 continue;
             }
 
-            auto rhs = parse_unary_expression();
+            auto rhs = parse_cast_expression();
             for (;;) {
                 const auto look_ahead = current().type();
                 const auto look_ahead_precedence = operator_precedence(look_ahead);
@@ -531,7 +603,7 @@ private:
     }
 
     expression_ptr parse_expression0(int precedence) {
-        return parse_expression1(parse_unary_expression(), precedence);
+        return parse_expression1(parse_cast_expression(), precedence);
     }
 
     expression_ptr parse_expression() {

@@ -14,6 +14,7 @@ namespace mcc {
 enum class ctype {
     none,
 
+    // Order of the type is significant
     void_t,
     plain_char_t,
     char_t,
@@ -48,7 +49,9 @@ enum class ctype {
 
 ENUM_BIT_OPS(ctype)
 
-constexpr  ctype base_type(ctype t) {
+std::ostream& operator<<(std::ostream& os, ctype t);
+
+constexpr ctype base_type(ctype t) {
     return t & ctype::base_f;
 }
 
@@ -56,8 +59,11 @@ constexpr ctype modified_base_type(ctype t, ctype new_base) {
     return new_base | (t & ~ctype::base_f);
 }
 
+constexpr bool is_integral(ctype t) {
+    return base_type(t) >= ctype::plain_char_t && base_type(t) <= ctype::long_long_t;
+}
+
 void output_flags(std::ostream& os, ctype t);
-std::ostream& operator<<(std::ostream& os, ctype t);
 
 ctype common_type(ctype l, ctype r);
 
@@ -197,6 +203,8 @@ private:
 
 std::ostream& operator<<(std::ostream& os, const array_info& ai);
 
+class parser;
+
 class tag_info_type {
 public:
     explicit tag_info_type(const std::string& id) : id_{id} {}
@@ -214,18 +222,43 @@ class struct_info : public tag_info_type {
 public:
     explicit struct_info(const std::string& id) : tag_info_type{id} {}
     ctype base_type() const override { return ctype::struct_t; }
+    const std::vector<decl>& members() const { return members_; }
+private:
+    std::vector<decl> members_;
+    friend parser;
 };
 
 class union_info : public tag_info_type {
 public:
     explicit union_info(const std::string& id) : tag_info_type{id} {}
     ctype base_type() const override { return ctype::union_t; }
+    const std::vector<decl>& members() const { return members_; }
+private:
+    std::vector<decl> members_;
+    friend parser;
+};
+
+class enum_value {
+public:
+    explicit enum_value(const std::string& id, int64_t val) : id_{id}, val_{val} {
+    }
+
+    const std::string& id() const { return id_; }
+    int64_t val() const { return val_; }
+
+private:
+    std::string id_;
+    int64_t val_;
 };
 
 class enum_info : public tag_info_type {
 public:
     explicit enum_info(const std::string& id) : tag_info_type{id} {}
     ctype base_type() const override { return ctype::enum_t; }
+    const std::vector<enum_value>& values() const { return values_; }
+private:
+    std::vector<enum_value> values_;
+    friend parser;
 };
 
 class function_info {

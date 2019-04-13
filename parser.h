@@ -54,6 +54,36 @@ private:
     }
 };
 
+class array_access_expression : public expression {
+public:
+    explicit array_access_expression(expression_ptr&& a, expression_ptr&& i) : a_{std::move(a)}, i_{std::move(i)} {
+        assert(a_ && i_);
+    }
+    const expression& i() const { return *i_; }
+    const expression& a() const { return *a_; }
+private:
+    expression_ptr a_;
+    expression_ptr i_;
+    void do_print(std::ostream& os) const override {
+        os << *a_ << "[" << *i_ << "]";
+    }
+};
+
+class cast_expression : public expression {
+public:
+    explicit cast_expression(const std::shared_ptr<const type>& t, expression_ptr&& e) : t_{std::move(t)}, e_{std::move(e)} {
+        assert(t_ && e_);
+    }
+    const std::shared_ptr<const type>& t() const { return t_; }
+    const expression& e() const { return *e_; }
+private:
+    std::shared_ptr<const type> t_;
+    expression_ptr e_;
+    void do_print(std::ostream& os) const override {
+        os << "(" << *t_ << ")" << *e_;
+    }
+};
+
 class binary_expression : public expression {
 public:
     explicit binary_expression(token_type op, expression_ptr&& l, expression_ptr&& r) : op_{op}, l_{std::move(l)}, r_{std::move(r)} {

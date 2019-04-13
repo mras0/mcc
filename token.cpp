@@ -103,7 +103,15 @@ const_int_val cast(const const_int_val& val, ctype new_type) {
     if (val.type == new_type) {
         return val;
     }
-    NOT_IMPLEMENTED(val << " " << new_type);
+    if (!is_integral(val.type) || !is_integral(new_type)) {
+        NOT_IMPLEMENTED(val << " " << new_type);
+    }
+    const_int_val res{val.val, new_type};
+    if (base_type(val.type) > new_type) {
+        // Chop off bits while maintaining invariants
+        NOT_IMPLEMENTED(val << " " << new_type);
+    }
+    return res;
 }
 
 std::ostream& operator<<(std::ostream& os, const token& t) {
