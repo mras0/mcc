@@ -48,14 +48,19 @@ public:
         standard_headers_.push_back(std::make_unique<source_file>(name, contents));
     }
 
+    void add_include_directory(const std::string& dir);
+
     const source_file& include(const std::string& included_from, const std::string_view filename);
     const source_file& load(const std::string_view filename);
 
 private:
     std::vector<std::unique_ptr<source_file>> files_;
     std::vector<std::unique_ptr<source_file>> standard_headers_;
+    std::vector<std::string> include_directories_;
     std::string base_dir_;
 };
+
+std::vector<std::string> process_wild_cards(const std::string& name);
 
 }
 

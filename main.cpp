@@ -211,21 +211,29 @@ IS_PAREN(xxx) // Expands to 0
 #undef PP_STR
 #undef PP_ID
 
+void process_one(source_manager& sm, const std::string& filename) {
+    std::cout << filename << "\n";
+    auto decls = parse(sm, sm.load(filename));
+    for (const auto& d: decls) {
+        if (d->d().t()->base() == ctype::function_t) {
+            std::cout << *d << "\n";
+        }
+    }
+}
+
 int main(int argc, char* argv[]) {
     try {
         test_preprocessor();
         if (argc < 2) {
             return 0;
         }
-        std::cout << "Compile " << argv[1] << "\n";
 
         source_manager sm;
         define_standard_headers(sm);
-        define_posix_headers(sm);        
-        auto decls = parse(sm, sm.load(argv[1]));
-        for (const auto& d: decls) {
-            if (d->d().t()->base() == ctype::function_t) {
-                std::cout << *d << "\n";
+        define_posix_headers(sm);
+        for (int i = 1; i < argc; ++i) {
+            for (const auto& f: process_wild_cards(argv[i])) {
+                process_one(sm, f);
             }
         }
     } catch (const std::exception& e) {
