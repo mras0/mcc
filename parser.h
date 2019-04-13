@@ -272,6 +272,15 @@ private:
     virtual void do_print(std::ostream& os) const = 0;
 };
 
+class empty_statement : public statement {
+public:
+    explicit empty_statement() {}
+private:
+    void do_print(std::ostream& os) const {
+        os << ";";
+    }
+};
+
 class declaration_statement : public statement {
 public:
     explicit declaration_statement(std::vector<std::unique_ptr<init_decl>>&& ds) : ds_{std::move(ds)} {
@@ -286,19 +295,31 @@ private:
 
 class labeled_statement : public statement {
 public:
-    explicit labeled_statement(const std::string& label, statement_ptr&& s) : label_{label}, s_{std::move(s)} {
+    explicit labeled_statement(statement_ptr&& s) : val_{}, s_{std::move(s)} {
         assert(s_);
     }
+    explicit labeled_statement(const std::string& label, statement_ptr&& s) : val_{label}, s_{std::move(s)} {
+        assert(s_);
+    }
+    explicit labeled_statement(expression_ptr&& e, statement_ptr&& s) : val_{std::move(e)}, s_{std::move(s)} {
+        assert(s_ && std::get<2>(val_));
+    }
 
-    const std::string& label() const { return label_; }
     const statement& s() { return *s_; }
 
 private:
-    std::string label_;
+    std::variant<std::monostate, std::string, expression_ptr> val_;
     statement_ptr s_;
 
     void do_print(std::ostream& os) const override {
-        os << label_ << ": " << *s_;
+        switch (val_.index()) {
+        case 0: os << "default"; break;
+        case 1: os << std::get<1>(val_); break;
+        case 2: os << "case " << *std::get<2>(val_); break;
+        default:
+            assert(false);
+        }
+        os << ": " << *s_;
     }
 };
 
@@ -360,10 +381,86 @@ private:
     }
 };
 
-//class switch_statement : public statement {};
-//class while_statement : public statement {};
-//class do_statement : public statement {};
-//class for_statement : public statement {};
+class switch_statement : public statement {
+public:
+    explicit switch_statement(expression_ptr&& e, statement_ptr&& s) : e_{std::move(e)}, s_{std::move(s)} {
+        assert(e_ && s_);
+    }
+
+    const expression& e() const { return *e_; }
+    const statement& s() const { return *s_; }
+
+private:
+    expression_ptr e_;
+    statement_ptr s_;
+
+    void do_print(std::ostream& os) const override {
+        os << "switch (" << *e_ << ") " << *s_;
+    }
+};
+
+class while_statement : public statement {
+public:
+    explicit while_statement(expression_ptr&& cond, statement_ptr&& s) : cond_{std::move(cond)}, s_{std::move(s)} {
+        assert(cond_ && s_);
+    }
+
+    const expression& cond() const { return *cond_; }
+    const statement& s() const { return *s_; }
+
+private:
+    expression_ptr cond_;
+    statement_ptr s_;
+
+    void do_print(std::ostream& os) const override {
+        os << "while (" << *cond_ << ") " << *s_;
+    }
+};
+
+class do_statement : public statement {
+public:
+    explicit do_statement(expression_ptr&& cond, statement_ptr&& s) : cond_{std::move(cond)}, s_{std::move(s)} {
+        assert(cond_ && s_);
+    }
+
+    const expression& cond() const { return *cond_; }
+    const statement& s() const { return *s_; }
+
+private:
+    expression_ptr cond_;
+    statement_ptr s_;
+
+    void do_print(std::ostream& os) const override {
+        os << "do " << *s_ << " while (" << *cond_ << ");";
+    }
+};
+
+class for_statement : public statement {
+public:
+    explicit for_statement(statement_ptr&& init, expression_ptr&& cond, expression_ptr&& iter, statement_ptr&& body) : init_{std::move(init)}, cond_{std::move(cond)}, iter_{std::move(iter)}, body_{std::move(body)} {
+        assert(init_ && body_);
+    }
+
+    const statement& init() const { return *init_; }
+    const expression_ptr& cond() const { return cond_; }
+    const expression_ptr& iter() const { return iter_; }
+    const statement& body() const { return *body_; }
+
+private:
+    statement_ptr init_;
+    expression_ptr cond_;
+    expression_ptr iter_;
+    statement_ptr body_;
+
+    void do_print(std::ostream& os) const override {
+        os << "for (" << *init_ << " ";
+        if (cond_) os << *cond_;
+        os << "; ";
+        if (iter_) os << *iter_;
+        os << ") " << *body_;
+    }
+
+};
 
 class goto_statement : public statement {
 public:
@@ -380,8 +477,25 @@ private:
     }
 };
 
-//class continue_statement : public statement {};
-//class break_statement : public statement {};
+class continue_statement : public statement {
+public:
+    explicit continue_statement() {}
+
+private:
+    void do_print(std::ostream& os) const override {
+        os << "continue;";
+    }
+};
+
+class break_statement : public statement {
+public:
+    explicit break_statement() {}
+
+private:
+    void do_print(std::ostream& os) const override {
+        os << "break;";
+    }
+};
 
 class return_statement : public statement {
 public:
@@ -448,10 +562,8 @@ private:
 };
 
 //
+// Parser
 //
-//
-
-const_int_val const_int_eval(const expression& e);
 
 class parser {
 public:

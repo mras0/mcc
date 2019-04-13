@@ -1119,8 +1119,8 @@ void define_standard_headers(source_manager& sm) {
     sm.define_standard_headers("setjmp.h", R"(
 #ifndef _SETJMP_H
 #define _SETJMP_H
-struct __jmp_buf;
-typedef struct __jmp_buf jmp_buf[1];
+struct _Jmp_buf;
+typedef struct _Jmp_buf jmp_buf[1];
 #endif
 )");
     sm.define_standard_headers("signal.h", "");
