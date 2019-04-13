@@ -59,6 +59,32 @@ private:
     }
 };
 
+class string_lit_expression : public expression {
+public:
+    explicit string_lit_expression(const std::string& text) : text_(text) {
+    }
+private:
+    std::string text_;
+    void do_print(std::ostream& os) const override;
+};
+
+class initializer_expression : public expression {
+public:
+    explicit initializer_expression(std::vector<expression_ptr>&& es) : es_{std::move(es)} {
+    }
+    const std::vector<expression_ptr>& es() const { return es_; }
+private:
+    std::vector<expression_ptr> es_;
+    void do_print(std::ostream& os) const override {
+        os << "{";
+        for (size_t i = 0; i < es_.size(); ++i) {
+            os << (i ? ", ": " ");
+            os << *es_[i];
+        }
+        os << " }";
+    }
+};
+
 class array_access_expression : public expression {
 public:
     explicit array_access_expression(expression_ptr&& a, expression_ptr&& i) : a_{std::move(a)}, i_{std::move(i)} {
@@ -84,6 +110,7 @@ public:
 private:
     expression_ptr f_;
     std::vector<expression_ptr> args_;
+
     void do_print(std::ostream& os) const override {
         os << *f_ << "(";
         for (size_t i = 0; i < args_.size(); ++i) {
@@ -91,6 +118,84 @@ private:
             os << *args_[i];
         }
         os << ")";
+    }
+};
+
+class access_expression : public expression {
+public:
+    explicit access_expression(token_type op, expression_ptr&& e, const std::string& id) : op_{op}, e_{std::move(e)}, id_{id} {
+        assert(op_ == token_type::dot || op_ == token_type::arrow);
+        assert(e_ && !id_.empty());
+    }
+
+    token_type op() const { return op_; }
+    const expression& e() const { return *e_; }
+    const std::string& id() const { return id_; }
+
+private:
+    token_type op_;
+    expression_ptr e_;
+    std::string id_;
+
+    void do_print(std::ostream& os) const override {
+        os << *e_ << op_ << id_;
+    }
+};
+
+class sizeof_expression : public expression {
+public:
+    explicit sizeof_expression(const std::shared_ptr<const type>& t) : val_{t} {
+        assert(std::get<0>(val_));
+    }
+    explicit sizeof_expression(expression_ptr&& e) : val_{std::move(e)} {
+        assert(std::get<1>(val_));
+    }
+private:
+    std::variant<std::shared_ptr<const type>, expression_ptr> val_;
+
+    void do_print(std::ostream& os) const override {
+        os << "sizeof ";
+        if (val_.index() == 0) {
+            os << "(" << *std::get<0>(val_) << ")";
+        } else {
+            os << *std::get<1>(val_);
+        }
+    }
+};
+
+class unary_expression : public expression {
+public:
+    token_type op() const { return op_; }
+    const expression& e() const { return *e_; }
+
+protected:
+    explicit unary_expression(bool is_prefix, token_type op, expression_ptr&& e) : is_prefix_{is_prefix}, op_{op}, e_{std::move(e)} {
+        assert(e_ && op != token_type::sizeof_);
+    }
+
+private:
+    bool is_prefix_;
+    token_type op_;
+    expression_ptr e_;
+
+    void do_print(std::ostream& os) const override {
+        if (is_prefix_) {
+            os << op_ << *e_;
+        } else {
+            os << *e_ << op_;
+        }
+    }
+};
+
+class prefix_expression : public unary_expression {
+public:
+    explicit prefix_expression(token_type op, expression_ptr&& e) : unary_expression{true, op, std::move(e)} {
+    }
+};
+
+class postfix_expression : public unary_expression {
+public:
+    explicit postfix_expression(token_type op, expression_ptr&& e) : unary_expression{false, op, std::move(e)} {
     }
 };
 
@@ -153,6 +258,8 @@ private:
 // Statement
 //
 
+class init_decl;
+
 class statement {
 public:
     virtual ~statement() {}
@@ -165,7 +272,36 @@ private:
     virtual void do_print(std::ostream& os) const = 0;
 };
 
-//class labeled_statement : public statement {};
+class declaration_statement : public statement {
+public:
+    explicit declaration_statement(std::vector<std::unique_ptr<init_decl>>&& ds) : ds_{std::move(ds)} {
+    }
+
+    const std::vector<std::unique_ptr<init_decl>>& ds() const { return ds_; }
+private:
+    std::vector<std::unique_ptr<init_decl>> ds_;
+
+   void do_print(std::ostream& os) const override;
+};
+
+class labeled_statement : public statement {
+public:
+    explicit labeled_statement(const std::string& label, statement_ptr&& s) : label_{label}, s_{std::move(s)} {
+        assert(s_);
+    }
+
+    const std::string& label() const { return label_; }
+    const statement& s() { return *s_; }
+
+private:
+    std::string label_;
+    statement_ptr s_;
+
+    void do_print(std::ostream& os) const override {
+        os << label_ << ": " << *s_;
+    }
+};
+
 class compound_statement : public statement {
 public:
     explicit compound_statement(std::vector<statement_ptr>&& ss) : ss_{std::move(ss)} {
@@ -177,11 +313,11 @@ private:
     std::vector<statement_ptr> ss_;
 
     void do_print(std::ostream& os) const override {
-        os << "{ ";
+        os << "{";
         for (const auto& s: ss_) {
-            os << s;
+            os << " " << *s;
         }
-        os << "}";
+        os << " }";
     }
 };
 
@@ -201,12 +337,49 @@ private:
     }
 };
 
-//class if_statement : public statement {};
+class if_statement : public statement {
+public:
+    explicit if_statement(expression_ptr&& cond, statement_ptr&& if_s, statement_ptr&& else_s) : cond_{std::move(cond)}, if_{std::move(if_s)}, else_{std::move(else_s)} {
+        assert(cond_ && if_);
+    }
+
+    const expression& cond() const { return *cond_; }
+    const statement& if_s() const { return *if_; }
+    const statement_ptr& else_s() const { return else_; }
+
+private:
+    expression_ptr cond_;
+    statement_ptr if_;
+    statement_ptr else_;
+
+    void do_print(std::ostream& os) const override {
+        os << "if (" << *cond_ << ") " << *if_;
+        if (else_) {
+            os << " else " << *else_;
+        }
+    }
+};
+
 //class switch_statement : public statement {};
 //class while_statement : public statement {};
 //class do_statement : public statement {};
 //class for_statement : public statement {};
-//class goto_statement : public statement {};
+
+class goto_statement : public statement {
+public:
+    explicit goto_statement(const std::string& target) : target_{target} {
+    }
+
+    const std::string& target() const { return target_; }
+
+private:
+    std::string target_;
+
+    void do_print(std::ostream& os) const override {
+        os << "goto " << target_ << ";";
+    }
+};
+
 //class continue_statement : public statement {};
 //class break_statement : public statement {};
 
@@ -238,7 +411,7 @@ public:
     }
 
     explicit init_decl(decl&& d, expression_ptr&& init) : d_{std::move(d)}, val_{std::move(init)} {
-        assert(is_arithmetic(d_.t()->base()) && std::get<1>(val_));
+        assert(d_.t()->base() != ctype::function_t && std::get<1>(val_));
     }
 
     explicit init_decl(decl&& d, std::unique_ptr<compound_statement>&& body) : d_{std::move(d)}, val_{std::move(body)} {
@@ -252,7 +425,7 @@ public:
     }
 
     const expression& init_expr() const {
-        assert(is_arithmetic(d_.t()->base()) && val_.index() == 1);
+        assert(val_.index() == 1);
         return *std::get<1>(val_);
     }
 
