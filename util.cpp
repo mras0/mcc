@@ -2,6 +2,8 @@
 
 namespace mcc {
 
+const int source_formatter::xindex_ = std::ios_base::xalloc();
+
 bool is_octal_digit(int ch) {
     return ch >= '0' && ch <= '7';
 }

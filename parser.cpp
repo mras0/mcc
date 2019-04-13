@@ -6,15 +6,212 @@
 
 namespace mcc {
 
+class push_precedence {
+public:
+    explicit push_precedence(std::ostream& os, int precedence) : os_{os}, sf_{os}, need_parenthesis_{sf_.precedence(precedence)} {
+        if (need_parenthesis_) os_ << '(';
+    }
+    explicit push_precedence(std::ostream& os, token_type op) : push_precedence{os, operator_precedence(op)} {
+    }
+    ~push_precedence() {
+        if (need_parenthesis_) os_ << ')';
+    }
+private:
+    std::ostream& os_;
+    source_formatter sf_;
+    bool need_parenthesis_;
+};
+
 void string_lit_expression::do_print(std::ostream& os) const {
     os << quoted(text_);
 }
 
-void declaration_statement::do_print(std::ostream& os) const {
-    for (const auto& d: ds_) {
-        os << *d << ";";
+void initializer_expression::do_print(std::ostream& os) const {
+    os << "{";
+    for (size_t i = 0; i < es_.size(); ++i) {
+        os << (i ? ", ": " ");
+        os << *es_[i];
+    }
+    os << " }";
+}
+
+void array_access_expression::do_print(std::ostream& os) const {
+    push_precedence pp{os, 2};
+    os << *a_ << "[" << *i_ << "]";
+}
+
+
+void function_call_expression::do_print(std::ostream& os) const {
+    push_precedence pp{os, 2};
+    os << *f_ << '(';
+    source_formatter sf{os};
+    sf.precedence(operator_precedence(token_type::comma));
+    for (size_t i = 0; i < args_.size(); ++i) {
+        if (i) os << ", ";
+        os << *args_[i];
+    }
+    os << ')';
+}
+
+
+void access_expression::do_print(std::ostream& os) const {
+    push_precedence pp{os, 2};
+    assert(op_ == token_type::dot || op_ == token_type::arrow);
+    os << *e_ << op_ << id_;
+}
+
+void sizeof_expression::do_print(std::ostream& os) const {
+    push_precedence pp{os, 3};
+    os << "sizeof";
+    if (val_.index() == 0) {
+        os << "(" << *std::get<0>(val_) << ")";
+    } else {
+        os << " " << *std::get<1>(val_);
     }
 }
+
+void unary_expression::do_print(std::ostream& os) const {
+    if (is_prefix_) {
+        push_precedence pp{os, 3};
+        os << op_ << *e_;
+    } else {
+        push_precedence pp{os, 2};
+        os << *e_ << op_;
+    }
+}
+
+void cast_expression::do_print(std::ostream& os) const {
+    push_precedence pp{os, 3};
+    os << "(" << *t_ << ")" << *e_;
+}
+
+void binary_expression::do_print(std::ostream& os) const {
+    push_precedence pp{os, operator_precedence(op_)};
+    os << *l_ << ' ' << op_ << ' ' << *r_;
+}
+
+void conditional_expression::do_print(std::ostream& os) const {
+    push_precedence pp{os, token_type::question};
+    os << *cond_ << " ? " << *l_ << " : " << *r_;
+}
+
+void empty_statement::do_print(std::ostream& os) const {
+    os << indent{} << ";";
+}
+
+void declaration_statement::do_print(std::ostream& os) const {
+    bool first = true;
+    for (const auto& d: ds_) {
+        if (first) first = false;
+        else os << "\n";
+        os << indent{} << *d << ";";
+    }
+}
+
+void labeled_statement::do_print(std::ostream& os) const {
+    {
+        source_formatter sf{os, -default_indent};
+        os << indent{};
+    }
+    switch (val_.index()) {
+    case 0: os << "default"; break;
+    case 1: os << std::get<1>(val_); break;
+    case 2: os << "case " << *std::get<2>(val_); break;
+    default:
+        assert(false);
+    }
+    os << ":\n" << *s_;
+}
+
+void compound_statement::do_print(std::ostream& os) const {
+    source_formatter sf0{os, -default_indent};
+    os << indent{} << "{\n";
+    {
+        source_formatter sf{os, default_indent};
+        for (const auto& s: ss_) {
+            os << *s << "\n";
+        }
+    }
+    os << indent{} << "}";
+}
+
+void expression_statement::do_print(std::ostream& os) const {
+    os << indent{} << *e_ << ";";
+}
+
+void if_statement::do_print(std::ostream& os) const {
+    os << indent{} << "if (" << *cond_ << ")\n";
+    {
+        source_formatter sf{os, default_indent};
+        os << *if_;
+    }
+    if (else_) {
+        const bool is_else_if = dynamic_cast<const if_statement*>(else_.get());
+        os << "\n" << indent{} << "else" << (is_else_if ? ' ' : '\n');
+        source_formatter sf{os, is_else_if ? 0 : default_indent};
+        if (is_else_if) {
+            sf.suppress_next();
+        }
+        os << *else_;
+    }
+}
+
+void switch_statement::do_print(std::ostream& os) const {
+    os << indent{} << "switch (" << *e_ << ")\n";
+    source_formatter sf{os, default_indent};
+    os << *s_;
+}
+
+void while_statement::do_print(std::ostream& os) const {
+    os << indent{} << "while (" << *cond_ << ")\n";
+    source_formatter sf{os, default_indent};
+    os << *s_;
+}
+
+void do_statement::do_print(std::ostream& os) const {
+    os << indent{} << "do\n";
+    {
+        source_formatter sf{os, default_indent};
+        os << *s_;
+    }
+    os << "\n" << indent{} << "while (" << *cond_ << ");";
+}
+
+void for_statement::do_print(std::ostream& os) const {
+    os << indent{} << "for (";
+    {
+        source_formatter sf{os};
+        sf.suppress_next();
+        os  << *init_ << " ";
+    }
+    if (cond_)  os << *cond_;
+    os << "; ";
+    if (iter_) os << *iter_;
+    os << ")\n";
+    source_formatter sf{os, default_indent};
+    os << *body_;
+}
+
+void goto_statement::do_print(std::ostream& os) const {
+    os << indent{} << "goto " << target_ << ";";
+}
+
+void continue_statement::do_print(std::ostream& os) const {
+    os << indent{} << "continue;";
+}
+
+void break_statement::do_print(std::ostream& os) const {
+    os << indent{} << "break;";
+}
+
+void return_statement::do_print(std::ostream& os) const {
+    os << indent{} << "return";
+    if (e_) {
+        os << " " << *e_;
+    }
+    os << ";";
+}
+
 
 #define EXPECT(tok) do { if (current().type() != token_type::tok) NOT_IMPLEMENTED("Expected " << token_type::tok << " got " << current()); next(); } while (0)
 #define TRACE(msg) std::cout << __FILE__ << ":" << __LINE__ << ": " << __func__ <<  " Current: " << current() << " " << msg << "\n"

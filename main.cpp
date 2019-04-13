@@ -215,16 +215,14 @@ IS_PAREN(xxx) // Expands to 0
 void process_one(source_manager& sm, const std::string& filename) {
     std::cout << filename << "\n";
     auto decls = parse(sm, sm.load(filename));
-    (void)decls;
-#if 1
     for (const auto& d: decls) {
         if (d->d().t()->base() == ctype::function_t) {
-            std::cout << *d << "\n";
-        } else {
-            std::cout << d->d() << "\n";
+            if (d->has_init_val()) {
+                std::cout << *d << "\n";
+                std::cout << d->body() << "\n\n";
+            }
         }
     }
-#endif
 }
 
 int main(int argc, char* argv[]) {

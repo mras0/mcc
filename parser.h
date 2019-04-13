@@ -95,14 +95,7 @@ public:
     const std::vector<expression_ptr>& es() const { return es_; }
 private:
     std::vector<expression_ptr> es_;
-    void do_print(std::ostream& os) const override {
-        os << "{";
-        for (size_t i = 0; i < es_.size(); ++i) {
-            os << (i ? ", ": " ");
-            os << *es_[i];
-        }
-        os << " }";
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class array_access_expression : public expression {
@@ -115,9 +108,7 @@ public:
 private:
     expression_ptr a_;
     expression_ptr i_;
-    void do_print(std::ostream& os) const override {
-        os << *a_ << "[" << *i_ << "]";
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class function_call_expression : public expression {
@@ -131,14 +122,7 @@ private:
     expression_ptr f_;
     std::vector<expression_ptr> args_;
 
-    void do_print(std::ostream& os) const override {
-        os << *f_ << "(";
-        for (size_t i = 0; i < args_.size(); ++i) {
-            if (i) os << ", ";
-            os << *args_[i];
-        }
-        os << ")";
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class access_expression : public expression {
@@ -157,9 +141,7 @@ private:
     expression_ptr e_;
     std::string id_;
 
-    void do_print(std::ostream& os) const override {
-        os << *e_ << op_ << id_;
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class sizeof_expression : public expression {
@@ -179,14 +161,7 @@ public:
 private:
     std::variant<std::shared_ptr<const type>, expression_ptr> val_;
 
-    void do_print(std::ostream& os) const override {
-        os << "sizeof ";
-        if (val_.index() == 0) {
-            os << "(" << *std::get<0>(val_) << ")";
-        } else {
-            os << *std::get<1>(val_);
-        }
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class unary_expression : public expression {
@@ -204,13 +179,7 @@ private:
     token_type op_;
     expression_ptr e_;
 
-    void do_print(std::ostream& os) const override {
-        if (is_prefix_) {
-            os << op_ << *e_;
-        } else {
-            os << *e_ << op_;
-        }
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class prefix_expression : public unary_expression {
@@ -235,9 +204,7 @@ public:
 private:
     std::shared_ptr<const type> t_;
     expression_ptr e_;
-    void do_print(std::ostream& os) const override {
-        os << "(" << *t_ << ")" << *e_;
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class binary_expression : public expression {
@@ -255,9 +222,7 @@ private:
     expression_ptr l_;
     expression_ptr r_;
 
-    void do_print(std::ostream& os) const override {
-        os << *l_ << op_ << *r_;
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class conditional_expression : public expression {
@@ -275,9 +240,7 @@ private:
     expression_ptr l_;
     expression_ptr r_;
 
-    void do_print(std::ostream& os) const override {
-        os << *cond_ << "?" << *l_ << ":" << *r_;
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 //
@@ -302,9 +265,7 @@ class empty_statement : public statement {
 public:
     explicit empty_statement() {}
 private:
-    void do_print(std::ostream& os) const {
-        os << ";";
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class declaration_statement : public statement {
@@ -337,16 +298,7 @@ private:
     std::variant<std::monostate, std::string, expression_ptr> val_;
     statement_ptr s_;
 
-    void do_print(std::ostream& os) const override {
-        switch (val_.index()) {
-        case 0: os << "default"; break;
-        case 1: os << std::get<1>(val_); break;
-        case 2: os << "case " << *std::get<2>(val_); break;
-        default:
-            assert(false);
-        }
-        os << ": " << *s_;
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class compound_statement : public statement {
@@ -359,13 +311,7 @@ public:
 private:
     std::vector<statement_ptr> ss_;
 
-    void do_print(std::ostream& os) const override {
-        os << "{";
-        for (const auto& s: ss_) {
-            os << " " << *s;
-        }
-        os << " }";
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class expression_statement : public statement {
@@ -379,9 +325,7 @@ public:
 private:
     expression_ptr e_;
 
-    void do_print(std::ostream& os) const override {
-        os << *e_ << ";";
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class if_statement : public statement {
@@ -399,12 +343,7 @@ private:
     statement_ptr if_;
     statement_ptr else_;
 
-    void do_print(std::ostream& os) const override {
-        os << "if (" << *cond_ << ") " << *if_;
-        if (else_) {
-            os << " else " << *else_;
-        }
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class switch_statement : public statement {
@@ -420,9 +359,7 @@ private:
     expression_ptr e_;
     statement_ptr s_;
 
-    void do_print(std::ostream& os) const override {
-        os << "switch (" << *e_ << ") " << *s_;
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class while_statement : public statement {
@@ -438,9 +375,7 @@ private:
     expression_ptr cond_;
     statement_ptr s_;
 
-    void do_print(std::ostream& os) const override {
-        os << "while (" << *cond_ << ") " << *s_;
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class do_statement : public statement {
@@ -456,9 +391,7 @@ private:
     expression_ptr cond_;
     statement_ptr s_;
 
-    void do_print(std::ostream& os) const override {
-        os << "do " << *s_ << " while (" << *cond_ << ");";
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class for_statement : public statement {
@@ -478,14 +411,7 @@ private:
     expression_ptr iter_;
     statement_ptr body_;
 
-    void do_print(std::ostream& os) const override {
-        os << "for (" << *init_ << " ";
-        if (cond_) os << *cond_;
-        os << "; ";
-        if (iter_) os << *iter_;
-        os << ") " << *body_;
-    }
-
+    void do_print(std::ostream& os) const override;
 };
 
 class goto_statement : public statement {
@@ -498,9 +424,7 @@ public:
 private:
     std::string target_;
 
-    void do_print(std::ostream& os) const override {
-        os << "goto " << target_ << ";";
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class continue_statement : public statement {
@@ -508,9 +432,7 @@ public:
     explicit continue_statement() {}
 
 private:
-    void do_print(std::ostream& os) const override {
-        os << "continue;";
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class break_statement : public statement {
@@ -518,9 +440,7 @@ public:
     explicit break_statement() {}
 
 private:
-    void do_print(std::ostream& os) const override {
-        os << "break;";
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 class return_statement : public statement {
@@ -533,13 +453,7 @@ public:
 private:
     expression_ptr e_;
 
-    void do_print(std::ostream& os) const override {
-        os << "return";
-        if (e_) {
-            os << " " << *e_;
-        }
-        os << ";";
-    }
+    void do_print(std::ostream& os) const override;
 };
 
 //

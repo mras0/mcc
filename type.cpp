@@ -108,7 +108,10 @@ std::ostream& operator<<(std::ostream& os, type t) {
     switch (t.base()) {
     case ctype::pointer_t: 
         os << *t.pointer_val();
-        os << " * ";
+        os << "*";
+        if (!!(t.ct() & (ctype::const_f|ctype::volatile_f|ctype::restrict_f))) {
+            os << " ";
+        }
         output_flags(os, t.ct());
         return os;
     case ctype::array_t:
@@ -141,7 +144,10 @@ void output_decl(std::ostream& os, const std::string& id, const type& t) {
         if (need_paren) {
             oss << "(";
         }
-        oss << "* ";
+        oss << "*";
+        if (!!(t.ct() & (ctype::const_f|ctype::volatile_f|ctype::restrict_f))) {
+            os << " ";
+        }
         output_flags(os, t.ct());
         oss << id;
         if (need_paren) {
