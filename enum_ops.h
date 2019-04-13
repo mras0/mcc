@@ -10,11 +10,17 @@ constexpr T& operator|=(T& t, T q) { \
 constexpr T& operator&=(T& t, T q) { \
     return t = static_cast<T>(static_cast<std::underlying_type_t<T>>(t)&static_cast<std::underlying_type_t<T>>(q)); \
 } \
+constexpr T& operator^=(T& t, T q) { \
+    return t = static_cast<T>(static_cast<std::underlying_type_t<T>>(t)^static_cast<std::underlying_type_t<T>>(q)); \
+} \
 constexpr T operator|(T l, T r) {\
     return l |= r;\
 }\
 constexpr T operator&(T l, T r) {\
     return l &= r;\
+}\
+constexpr T operator^(T l, T r) {\
+    return l ^= r;\
 }\
 constexpr T operator~(T x) {\
     return static_cast<T>(~static_cast<std::underlying_type_t<T>>(x));\

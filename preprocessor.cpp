@@ -1119,44 +1119,53 @@ void define_standard_headers(source_manager& sm) {
     sm.define_standard_headers("setjmp.h", R"(
 #ifndef _SETJMP_H
 #define _SETJMP_H
-struct _Jmp_buf;
 typedef struct _Jmp_buf jmp_buf[1];
 #endif
 )");
     sm.define_standard_headers("signal.h", "");
     sm.define_standard_headers("stdalign.h", "");
-    sm.define_standard_headers("stdarg.h", "");
+    sm.define_standard_headers("stdarg.h", R"(
+#ifndef _STDARG_H
+#define _STDARG_H
+typedef struct __va_list* va_list;
+#endif
+)");
     sm.define_standard_headers("stdatomic.h", "");
     sm.define_standard_headers("stdbool.h", "");
     sm.define_standard_headers("stddef.h", R"(
 #ifndef _STDDEF_H
 #define _STDDEF_H
-typedef signed long long ptrdiff_t;
+typedef long long          ptrdiff_t;
+typedef long long          ssize_t;
 typedef unsigned long long size_t;
-typedef unsigned short wchar_t;
+typedef unsigned short     wchar_t;
 #define NULL ((void*)0)
-#define offsetof(type,member) ((size_t)&((type*)0)->member))
+#define offsetof(type,member) ((size_t)&((type*)0)->member)
 #endif
 )");
     sm.define_standard_headers("stdint.h", R"(
 #ifndef _STDINT_H
 #define _STDINT_H
-typedef signed char int8_t;
-typedef short int int16_t;
-typedef int int32_t;
-typedef long long int int64_t;
+typedef signed char             int8_t;
+typedef short int               int16_t;
+typedef int                     int32_t;
+typedef long long int           int64_t;
+typedef long long int           intptr_t;
 typedef unsigned char           uint8_t;
 typedef unsigned short int      uint16_t;
 typedef unsigned int            uint32_t;
 typedef unsigned long long int  uint64_t;
+typedef unsigned long long int  uintptr_t;
 #endif
 )");
     sm.define_standard_headers("stdio.h", R"(
 #ifndef _STDIO_H
 #define _STDIO_H
 #include <stddef.h>
-struct _FILE;
 typedef struct _FILE FILE;
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
 #endif
 )");
     sm.define_standard_headers("stdlib.h", "");
@@ -1164,7 +1173,24 @@ typedef struct _FILE FILE;
     sm.define_standard_headers("string.h", "");
     sm.define_standard_headers("tgmath.h", "");
     sm.define_standard_headers("threads.h", "");
-    sm.define_standard_headers("time.h", "");
+    sm.define_standard_headers("time.h", R"(
+#ifndef _TIME_H
+#define _TIME_H
+#include <stddef.h>
+struct tm {
+    int  tm_sec;   // seconds [0,61]
+    int  tm_min;   // minutes [0,59]
+    int  tm_hour;  // hour [0,23]
+    int  tm_mday;  // day of month [1,31]
+    int  tm_mon;   // month of year [0,11]
+    int  tm_year;  // years since 1900
+    int  tm_wday;  // day of week [0,6] (Sunday = 0)
+    int  tm_yday;  // day of year [0,365]
+    int  tm_isdst; // daylight savings flag
+};
+typedef long long time_t;
+#endif
+)");
     sm.define_standard_headers("uchar.h", "");
     sm.define_standard_headers("wchar.h", "");
     sm.define_standard_headers("wctype.h", "");

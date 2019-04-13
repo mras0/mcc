@@ -40,6 +40,7 @@ public:
 
 private:
     std::string id_;
+
     void do_print(std::ostream& os) const override {
         os << id_;
     }
@@ -54,6 +55,25 @@ public:
 
 private:
     const_int_val val_;
+
+    void do_print(std::ostream& os) const override {
+        os << val_;
+    }
+};
+
+class const_float_expression : public expression {
+public:
+    explicit const_float_expression(double val, ctype t) : val_{val}, t_{t} {
+        assert(t == ctype::float_t || t == ctype::double_t || t == ctype::long_double_t);
+    }
+
+    double val() const { return val_; }
+    ctype t() const { return t_; }
+
+private:
+    double val_;
+    ctype t_;
+
     void do_print(std::ostream& os) const override {
         os << val_;
     }
@@ -147,9 +167,15 @@ public:
     explicit sizeof_expression(const std::shared_ptr<const type>& t) : val_{t} {
         assert(std::get<0>(val_));
     }
+ 
     explicit sizeof_expression(expression_ptr&& e) : val_{std::move(e)} {
         assert(std::get<1>(val_));
     }
+
+    bool arg_is_type() const { return val_.index() == 0; }
+    const std::shared_ptr<const type>& t() const { assert(val_.index()==0); return std::get<0>(val_); }
+    const expression& e() const { assert(val_.index()==1); return *std::get<1>(val_); }
+
 private:
     std::variant<std::shared_ptr<const type>, expression_ptr> val_;
 
@@ -565,20 +591,7 @@ private:
 // Parser
 //
 
-class parser {
-public:
-    explicit parser(source_manager& sm, const source_file& source);
-    ~parser();
-
-    std::vector<source_position> position() const;
-
-    void parse();
-
-private:
-    class impl;
-    std::unique_ptr<impl> impl_;
-};
-
+std::vector<std::unique_ptr<init_decl>> parse(source_manager& sm, const source_file& source);
 
 } // namespace mcc
 

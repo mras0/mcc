@@ -221,19 +221,13 @@ int main(int argc, char* argv[]) {
 
         source_manager sm;
         define_standard_headers(sm);
-        define_posix_headers(sm);
-        parser ps{sm, sm.load(argv[1])};
-        try {
-            ps.parse();
-        } catch (...) {
-            std::cerr << "At\n";
-            for (const auto& p : ps.position()) {
-                std::cerr << p << "\n";
+        define_posix_headers(sm);        
+        auto decls = parse(sm, sm.load(argv[1]));
+        for (const auto& d: decls) {
+            if (d->d().t()->base() == ctype::function_t) {
+                std::cout << *d << "\n";
             }
-            std::cerr << "\n";
-            throw;
         }
-
     } catch (const std::exception& e) {
         std::cerr << e.what() << "\n";
         return 1;

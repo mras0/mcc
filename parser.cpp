@@ -19,18 +19,57 @@ void declaration_statement::do_print(std::ostream& os) const {
 #define EXPECT(tok) do { if (current().type() != token_type::tok) NOT_IMPLEMENTED("Expected " << token_type::tok << " got " << current()); next(); } while (0)
 #define TRACE(msg) std::cout << __FILE__ << ":" << __LINE__ << ": " << __func__ <<  " Current: " << current() << " " << msg << "\n"
 
-class parser::impl {
+class scope {
 public:
-    explicit impl(source_manager& sm, const source_file& source) : lex_{sm, source} {
+    explicit scope() {
     }
 
-    auto position() const {
-        return lex_.position();
+    void add(const std::string& id, const std::shared_ptr<const type>& t) {
+        if (auto it = vals_.find(id); it != vals_.end()) {
+            const auto type_diff = t->ct() ^ it->second->ct();
+            if (type_diff != ctype::none && type_diff != ctype::static_f && type_diff != ctype::extern_f) {
+                NOT_IMPLEMENTED(*t << " " << id << " already defined as " << *it->second << " (diff: " << type_diff << ")");
+            }
+            return;
+        }
+        vals_.insert({id, t});
     }
 
-    void parse() {
-        for (;;) {
-            (void)parse_declaration();
+    std::shared_ptr<const type> lookup(const std::string& id) {
+        auto it = vals_.find(id);
+        return it != vals_.end() ? it->second : nullptr;
+    }
+
+private:
+    std::map<std::string, std::shared_ptr<const type>> vals_;
+};
+
+class parser {
+public:
+    explicit parser(source_manager& sm, const source_file& source) : lex_{sm, source} {
+    }
+    ~parser() {
+        assert(active_scopes_.empty());
+    }
+
+    std::vector<std::unique_ptr<init_decl>> parse() {
+        try {
+            push_scope global_scope{*this};
+            std::vector<std::unique_ptr<init_decl>> res;
+            while (current().type() != token_type::eof) {
+                auto d = parse_declaration();
+                add_scope_decls(d);
+                res.insert(res.end(), std::make_move_iterator(d.begin()), std::make_move_iterator(d.end()));
+            }
+            return res;
+        } catch (const std::exception& e) {
+            std::ostringstream oss;
+            oss << e.what() << "\n\n";
+            for (const auto& p : lex_.position()) {
+                oss << p << "\n";
+            }
+            oss << "Current token: " << current();
+            throw std::runtime_error(oss.str());
         }
     }
 
@@ -39,6 +78,41 @@ private:
     int unnamed_cnt_ = 0;
     std::vector<std::shared_ptr<tag_info_type>> tag_types_;
     std::map<std::string, std::shared_ptr<type>> typedefs_;
+    std::vector<std::unique_ptr<scope>> active_scopes_;
+
+    class push_scope {
+    public:
+        explicit push_scope(parser& p) : p_{p} {
+            p_.active_scopes_.push_back(std::make_unique<scope>());
+        }
+        ~push_scope() {
+            p_.active_scopes_.pop_back();
+        }
+    private:
+        parser& p_;
+    };
+
+    void add_scope_decl(const std::string& id, const std::shared_ptr<const type>& t) {
+        assert(!active_scopes_.empty());
+        assert(!id.empty());
+        active_scopes_.back()->add(id, t);
+    }
+
+    void add_scope_decls(const std::vector<std::unique_ptr<init_decl>>& ds) {
+        for (const auto& d: ds) {
+            add_scope_decl(d->d().id(), d->d().t());
+        }
+    }
+
+    std::shared_ptr<const type> scope_lookup(const std::string& id) {
+        assert(!active_scopes_.empty());
+        for (auto it = active_scopes_.crbegin(), end = active_scopes_.crend(); it != end; ++it) {
+            if (auto t = (*it)->lookup(id)) {
+                return t;
+            }
+        }
+        NOT_IMPLEMENTED(id << " not found in current scope");
+    }
 
     std::shared_ptr<tag_info_type> find_tag_type(const std::string_view id) {
         for (auto& s: tag_types_) {
@@ -69,6 +143,9 @@ private:
 
     bool is_current_type_name() const {
         const auto t = current().type();
+        if (t == token_type::struct_ || t == token_type::union_ || t == token_type::enum_) {
+            return true;
+        }
         if (t == token_type::id) {
             auto id = current().text();
             if (find_typedef(id)) {
@@ -120,33 +197,37 @@ private:
                 auto t = std::make_shared<type>(*d.t());
                 t->remove_flags(ctype::typedef_f);
                 typedefs_[d.id()] = t;
-                break;
-            }
-
-            if (current().type() == token_type::colon) {
-                // TODO: Bitfield
-                next();
-                auto e = parse_constant_expression();
-                std::cout << "Ignoring bitfield: " << *e << "\n";
-            }
-
-            if (current().type() == token_type::lbrace) {
-                if (d.t()->base() == ctype::function_t) {
-                    if (!decls.empty()) {
-                        NOT_IMPLEMENTED(decls.size() << " " << d);
-                    }
-                    decls.push_back(std::make_unique<init_decl>(std::move(d), parse_compound_statement()));
-                    std::cout << *decls.back() << "\n";
-                    std::cout << decls.back()->body() << "\n";
-                    return decls;
-                } else {
-                    NOT_IMPLEMENTED(d << " " << current() << " " << decls.size());
-                }
-            } else if (current().type() == token_type::eq) {
-                next();
-                decls.push_back(std::make_unique<init_decl>(std::move(d), parse_initializer()));
             } else {
-                decls.push_back(std::make_unique<init_decl>(std::move(d)));
+                if (current().type() == token_type::colon) {
+                    // Bitfield
+                    next();
+                    if (!is_integral(d.t()->base())) {
+                        NOT_IMPLEMENTED("Bitfield for " << d);
+                    }
+                    const auto size = const_int_eval(*parse_constant_expression()).val;
+                    if (size > 63) {
+                        NOT_IMPLEMENTED(d << ":" << size);
+                    }
+                    auto ct = modified_bitfield(d.t()->ct() | ctype::bitfield_f, static_cast<uint8_t>(size));
+                    d = decl{std::make_shared<type>(ct), d.id()};
+                }
+
+                if (current().type() == token_type::lbrace) {
+                    if (d.t()->base() == ctype::function_t) {
+                        if (!decls.empty()) {
+                            NOT_IMPLEMENTED(decls.size() << " " << d);
+                        }
+                        decls.push_back(std::make_unique<init_decl>(std::move(d), parse_compound_statement()));
+                        return decls;
+                    } else {
+                        NOT_IMPLEMENTED(d << " " << current() << " " << decls.size());
+                    }
+                } else if (current().type() == token_type::eq) {
+                    next();
+                    decls.push_back(std::make_unique<init_decl>(std::move(d), parse_initializer()));
+                } else {
+                    decls.push_back(std::make_unique<init_decl>(std::move(d)));
+                }
             }
 
             if (current().type() != token_type::comma) {
@@ -155,7 +236,16 @@ private:
             next();
         }
 
-        EXPECT(semicolon);
+        try {
+            EXPECT(semicolon);
+        } catch (...) {
+            std::cout << "Parsed declarations:\n";
+            for (const auto& d: decls) {
+                std::cout << "\t" << *d << "\n";
+            }
+            throw;
+        }
+
 
         return decls;
     }
@@ -338,7 +428,7 @@ private:
             break;
         }
 
-        if (!long_ && !int_ && sign == -1) {
+        if (!long_ && !int_ && sign == -1 && res_type->base() != ctype::none) {
             return res_type;
         }
 
@@ -381,13 +471,16 @@ private:
 
     decl parse_declarator(std::shared_ptr<const type> t) {
         // '*' type-qualifier-list? pointer?
+        const auto storage_flags = t->ct() & ctype::storage_f;
         while (current().type() == token_type::star) {
             next();
-            ctype pt = ctype::pointer_t;
+            ctype pt = ctype::pointer_t | storage_flags;
             while (is_type_qualifier(current().type())) {
                 pt |=  ctype_from_type_qualifier_token(current().type());
                 next();
             }
+            auto pointee = std::make_shared<type>(*t);
+            pointee->remove_flags(ctype::storage_f);
             t = std::make_shared<type>(pt, t);
         }
         return parse_direct_declarator(t);
@@ -407,7 +500,7 @@ private:
             id = current().text();
             next();
         }
-        if (current().type() == token_type::lbracket) {
+        while (current().type() == token_type::lbracket) {
             auto bound = array_info::unbounded;
             next();
             if (current().type() != token_type::rbracket) {
@@ -421,13 +514,14 @@ private:
             auto array_type = std::make_shared<type>(*t);
             array_type->remove_flags(ctype::storage_f);
             t = std::make_shared<type>(ctype::array_t | storage_flags, std::make_unique<array_info>(array_type, bound));
-        } else if (current().type() == token_type::lparen) {
+        }
+        if (current().type() == token_type::lparen) {
             next();
-            auto arg_types = parse_parameter_type_list();
-            EXPECT(rparen);
             auto return_type = std::make_shared<type>(*t);
             return_type->remove_flags(ctype::storage_f);
-            t = std::make_shared<type>(ctype::function_t | storage_flags, std::make_unique<function_info>(return_type, arg_types));
+            auto fi = parse_parameter_type_list(std::move(return_type));
+            EXPECT(rparen);
+            t = std::make_shared<type>(ctype::function_t | storage_flags, std::move(fi));
         }
         if (inner_type) {
             inner_type->modify_inner(t);
@@ -436,26 +530,28 @@ private:
         return decl{t, id};
     }
 
-    std::vector<decl> parse_parameter_type_list() {
+    std::unique_ptr<function_info> parse_parameter_type_list(std::shared_ptr<type>&& return_type) {
         std::vector<decl> arg_types;
-        for (size_t cnt = 0; current().type() != token_type::rparen; ++cnt) {
-            if (cnt) {
-                EXPECT(comma);
-            }
+        bool variadic = false;
+        for (;;) {
             if (current().type() == token_type::ellipsis) {
-                std::cout << "TODO: Handle ellipsis\n";
-                arg_types.push_back(decl{std::make_shared<type>(), "..."});
                 next();
-            } else {
-                const auto ds = parse_declaration_specifiers();
-                const auto d = parse_declarator(ds);
-                if (d.t()->base() == ctype::none) {
-                    NOT_IMPLEMENTED(d);
-                }
-                arg_types.push_back(d);
+                variadic = true;
+                break;
             }
+
+            const auto ds = parse_declaration_specifiers();
+            const auto d = parse_declarator(ds);
+            if (d.t()->base() == ctype::none) {
+                NOT_IMPLEMENTED(d);
+            }
+            arg_types.push_back(d);
+            if (current().type() != token_type::comma) {
+                break;
+            }
+            next();
         }
-        return arg_types;
+        return std::make_unique<function_info>(return_type, arg_types, variadic);
     }
 
     std::vector<decl> parse_struct_declaration_list() {
@@ -527,7 +623,9 @@ private:
             next();
             return std::make_unique<const_int_expression>(v);
         } else if (t == token_type::const_float) {
-            NOT_IMPLEMENTED(t);
+            const auto v = current().float_val();
+            next();
+            return std::make_unique<const_float_expression>(v, ctype::double_t);
         } else if (t == token_type::char_lit) {
             const auto v = current().char_val();
             next();
@@ -689,7 +787,9 @@ private:
 
     statement_ptr parse_statement() {
         if (is_current_type_name()) {
-            return std::make_unique<declaration_statement>(parse_declaration());
+            auto d = parse_declaration();
+            add_scope_decls(d);
+            return std::make_unique<declaration_statement>(std::move(d));
         }
         const auto t = current().type();
         switch (t) {
@@ -705,10 +805,15 @@ private:
                 EXPECT(lparen);
                 auto cond = parse_expression();
                 EXPECT(rparen);
-                auto if_s = parse_statement();
+                statement_ptr if_s;
+                {
+                    push_scope ps{*this};
+                    if_s = parse_statement();
+                }
                 statement_ptr else_s{};
                 if (current().type() == token_type::else_) {
                     next();
+                    push_scope ps{*this};
                     else_s = parse_statement();
                 }
                 return std::make_unique<if_statement>(std::move(cond), std::move(if_s), std::move(else_s));
@@ -719,6 +824,7 @@ private:
                 EXPECT(lparen);
                 auto e = parse_expression();
                 EXPECT(rparen);
+                push_scope ps{*this};
                 return std::make_unique<switch_statement>(std::move(e), parse_statement());
             }
             // iteration-statement
@@ -728,11 +834,13 @@ private:
                 EXPECT(lparen);
                 auto cond = parse_expression();
                 EXPECT(rparen);
+                push_scope ps{*this};
                 return std::make_unique<while_statement>(std::move(cond), parse_statement());
             }
         case token_type::do_:
             {
                 next();
+                push_scope ps{*this};
                 auto s = parse_statement();
                 EXPECT(while_);
                 EXPECT(lparen);
@@ -745,6 +853,7 @@ private:
                 next();
                 expression_ptr cond{}, iter{};
                 EXPECT(lparen);
+                push_scope ps{*this};
                 auto init = parse_statement();
                 if (current().type() != token_type::semicolon) {
                     cond = parse_expression();
@@ -767,9 +876,11 @@ private:
             }
         case token_type::continue_:
             next();
+            EXPECT(semicolon);
             return std::make_unique<continue_statement>();
         case token_type::break_:
             next();
+            EXPECT(semicolon);
             return std::make_unique<break_statement>();
         case token_type::return_:
             next();
@@ -808,11 +919,17 @@ private:
         } else {
             e = parse_expression();
         }
-        EXPECT(semicolon);
+        try {
+            EXPECT(semicolon);
+        } catch (...) {
+            std::cout << "Parsed expression: " << *e << "\n";
+            throw;
+        }
         return std::make_unique<expression_statement>(std::move(e));
     }
 
     std::unique_ptr<compound_statement> parse_compound_statement() {
+        push_scope ps{*this};
         std::vector<statement_ptr> ss;
         EXPECT(lbrace);
         while (current().type() != token_type::rbrace) {
@@ -825,9 +942,11 @@ private:
 
     const_int_val const_int_lookup(const std::string& id);
     const_int_val const_int_eval(const expression& e);
+    std::shared_ptr<const type> expression_type(const expression& e);
+    size_t sizeof_type(const type& t);
 };
 
-const_int_val parser::impl::const_int_lookup(const std::string& id) {    
+const_int_val parser::const_int_lookup(const std::string& id) {    
     for (const auto& tt: tag_types_) {
         if (tt->base_type() != ctype::enum_t) {
             continue;
@@ -842,7 +961,7 @@ const_int_val parser::impl::const_int_lookup(const std::string& id) {
     NOT_IMPLEMENTED(id);
 }
 
-const_int_val parser::impl::const_int_eval(const expression& e) {
+const_int_val parser::const_int_eval(const expression& e) {
     if (auto cie = dynamic_cast<const const_int_expression*>(&e)) {
         return cie->val();
     } else if (auto ie = dynamic_cast<const identifier_expression*>(&e)) {
@@ -881,23 +1000,73 @@ const_int_val parser::impl::const_int_eval(const expression& e) {
         default:
             NOT_IMPLEMENTED(l << " " << be->op() << " " << r);
         }
+    } else if (auto se = dynamic_cast<const sizeof_expression*>(&e)) {
+        if (se->arg_is_type()) {
+            NOT_IMPLEMENTED("sizeof " << *se->t());
+        } else {
+            return const_int_val{sizeof_type(*expression_type(se->e())), ctype::long_long_t | ctype::unsigned_f};
+        }
     }
 
     NOT_IMPLEMENTED(e);
 }
 
-
-parser::parser(source_manager& sm, const source_file& source) : impl_{new impl{sm, source}} {
+std::shared_ptr<const type> parser::expression_type(const expression& e) {
+    if (auto ae = dynamic_cast<const access_expression*>(&e)) {
+        auto t = expression_type(ae->e());
+        if (ae->op() == token_type::arrow) {
+            if (t->base() != ctype::pointer_t) {
+                NOT_IMPLEMENTED(e << " t: " << *t << " id: " << ae->id());
+            }
+            t = t->pointer_val();
+        }
+        if (t->base() == ctype::struct_t || t->base() == ctype::union_t) {
+            const auto& members = t->base() == ctype::struct_t ? t->struct_val().members() : t->union_val().members();
+            for (const auto& m: members) {
+                if (m.id() == ae->id()) {
+                    return m.t();
+                }
+            }
+        }
+        NOT_IMPLEMENTED(e << " t: " << *t << " id: " << ae->id());
+    } else if (auto ie = dynamic_cast<const identifier_expression*>(&e)) {
+        return scope_lookup(ie->id());
+    }
+    NOT_IMPLEMENTED(e);
 }
 
-parser::~parser() = default;
-
-std::vector<source_position> parser::position() const {
-    return impl_->position();
+size_t parser::sizeof_type(const type& t) {
+    const size_t pointer_size = 8;
+    switch (t.base()) {
+    case ctype::void_t:         NOT_IMPLEMENTED(t);
+    case ctype::plain_char_t:   return 1;
+    case ctype::char_t:         return 1;
+    case ctype::short_t:        return 2;
+    case ctype::int_t:          return 4;
+    case ctype::long_t:         return 8;
+    case ctype::long_long_t:    return 8;
+    case ctype::float_t:        return 4;
+    case ctype::double_t:       return 8;
+    case ctype::long_double_t:  return 8;
+    case ctype::pointer_t:      return pointer_size;
+    case ctype::array_t:
+        if (const auto& ai = t.array_val(); ai.bound() == array_info::unbounded) {
+            return pointer_size;
+        } else {
+            return ai.bound() * sizeof_type(*ai.t());
+        }
+    case ctype::struct_t:       NOT_IMPLEMENTED(t);
+    case ctype::union_t:        NOT_IMPLEMENTED(t);
+    case ctype::enum_t:         NOT_IMPLEMENTED(t);
+    case ctype::function_t:     NOT_IMPLEMENTED(t);
+    default:
+        NOT_IMPLEMENTED(t);
+    }
 }
 
-void parser::parse() {
-    impl_->parse();
+std::vector<std::unique_ptr<init_decl>> parse(source_manager& sm, const source_file& source) {
+    parser p{sm, source};
+    return p.parse();
 }
 
 } // namespace mcc

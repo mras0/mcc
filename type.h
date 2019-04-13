@@ -11,6 +11,8 @@
 
 namespace mcc {
 
+constexpr int bitfield_shift = 24;
+
 enum class ctype {
     none,
 
@@ -35,16 +37,19 @@ enum class ctype {
     base_f     = 0xff,
 
     unsigned_f = 1<<8,
-    extern_f   = 1<<9,
-    static_f   = 1<<10,
-    typedef_f  = 1<<11,
-    register_f = 1<<12,
-    const_f    = 1<<13,
-    restrict_f = 1<<14,
-    volatile_f = 1<<15,
-    inline_f   = 1<<16,
+    bitfield_f = 1<<9,
+    extern_f   = 1<<10,
+    static_f   = 1<<11,
+    typedef_f  = 1<<12,
+    register_f = 1<<13,
+    const_f    = 1<<14,
+    restrict_f = 1<<15,
+    volatile_f = 1<<16,
+    inline_f   = 1<<17,
 
     storage_f = extern_f | static_f | typedef_f | register_f | inline_f,
+
+    bitfield_mask = 0x3f << bitfield_shift,
 };
 
 ENUM_BIT_OPS(ctype)
@@ -65,6 +70,16 @@ constexpr bool is_integral(ctype t) {
 
 constexpr bool is_arithmetic(ctype t) {
     return base_type(t) >= ctype::plain_char_t && base_type(t) <= ctype::long_double_t;
+}
+
+constexpr ctype modified_bitfield(ctype t, uint8_t val) {
+    assert(!!(t & ctype::bitfield_f) && val < 64);
+    return t | static_cast<ctype>(static_cast<std::underlying_type_t<ctype>>(val) << bitfield_shift);
+}
+
+constexpr uint8_t bitfield_value(ctype t) {
+    assert(!!(t & ctype::bitfield_f));
+    return static_cast<uint8_t>(static_cast<std::underlying_type_t<ctype>>(t & ctype::bitfield_mask) >> bitfield_shift);
 }
 
 void output_flags(std::ostream& os, ctype t);
@@ -132,9 +147,9 @@ public:
 
     void modify_inner(const std::shared_ptr<const type>& t);
 
-    const type& pointer_val() const {
+    const std::shared_ptr<const type>& pointer_val() const {
         assert(base_type(t_) == ctype::pointer_t);
-        return *std::get<1>(val_);
+        return std::get<1>(val_);
     }
 
     const array_info& array_val() const {
@@ -267,15 +282,17 @@ private:
 
 class function_info {
 public:
-    explicit function_info(const std::shared_ptr<const type>& ret_type, const std::vector<decl>& params) : ret_type_{ret_type}, params_{params} {
+    explicit function_info(const std::shared_ptr<const type>& ret_type, const std::vector<decl>& params, bool variadic) : ret_type_{ret_type}, params_{params}, variadic_{variadic} {
     }
 
     const std::shared_ptr<const type>& ret_type() const { return ret_type_; }
     const std::vector<decl>& params() const { return params_; }
+    bool variadic() const { return variadic_; }
 
 private:
     std::shared_ptr<const type> ret_type_;
     std::vector<decl> params_;
+    bool variadic_;
 };
 std::ostream& operator<<(std::ostream& os, const function_info& fi);
 

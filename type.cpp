@@ -24,25 +24,30 @@ void output_flags(std::ostream& os, ctype t) {
 std::ostream& operator<<(std::ostream& os, ctype t) {
     output_flags(os, t);
     switch (t & ctype::base_f) {
-    case ctype::none:          return os << "none";
-    case ctype::void_t:        return os << "void";
-    case ctype::plain_char_t:  return os << "char";
-    case ctype::char_t:        return os << "char";
-    case ctype::short_t:       return os << "short";
-    case ctype::int_t:         return os << "int";
-    case ctype::long_t:        return os << "long";
-    case ctype::long_long_t:   return os << "long long";
-    case ctype::float_t:       return os << "float";
-    case ctype::double_t:      return os << "double";
-    case ctype::long_double_t: return os << "long double";
-    case ctype::pointer_t:     return os << "pointer";
-    case ctype::array_t:       return os << "array";
-    case ctype::struct_t:      return os << "struct";
-    case ctype::union_t:       return os << "union";
-    case ctype::enum_t:        return os << "enum";
-    case ctype::function_t:    return os << "function";
+    case ctype::none:          os << "none"; break;
+    case ctype::void_t:        os << "void"; break;
+    case ctype::plain_char_t:  os << "char"; break;
+    case ctype::char_t:        os << "char"; break;
+    case ctype::short_t:       os << "short"; break;
+    case ctype::int_t:         os << "int"; break;
+    case ctype::long_t:        os << "long"; break;
+    case ctype::long_long_t:   os << "long long"; break;
+    case ctype::float_t:       os << "float"; break;
+    case ctype::double_t:      os << "double"; break;
+    case ctype::long_double_t: os << "long double"; break;
+    case ctype::pointer_t:     os << "pointer"; break;
+    case ctype::array_t:       os << "array"; break;
+    case ctype::struct_t:      os << "struct"; break;
+    case ctype::union_t:       os << "union"; break;
+    case ctype::enum_t:        os << "enum"; break;
+    case ctype::function_t:    os << "function"; break;
+    default:
+        NOT_IMPLEMENTED(static_cast<uint32_t>(t & ctype::base_f));
     }
-    NOT_IMPLEMENTED(static_cast<uint32_t>(t & ctype::base_f));
+    if (!!(t & ctype::bitfield_f)) {
+        os << ":" << static_cast<int>(bitfield_value(t));
+    }
+    return os;
 }
 
 ctype common_type(ctype l, ctype r) {
@@ -67,7 +72,7 @@ void type::modify_inner(const std::shared_ptr<const type>& t) {
 std::ostream& operator<<(std::ostream& os, type t) {
     switch (t.base()) {
     case ctype::pointer_t: 
-        os << t.pointer_val();
+        os << *t.pointer_val();
         os << " * ";
         output_flags(os, t.ct());
         return os;
@@ -95,7 +100,7 @@ void output_decl(std::ostream& os, const std::string& id, const type& t) {
     switch (t.base()) {
     case ctype::pointer_t:
     {
-        const auto& pointee = t.pointer_val();
+        const auto& pointee = *t.pointer_val();
         const bool need_paren = pointee.base() == ctype::array_t || pointee.base() == ctype::function_t;
         std::ostringstream oss;
         if (need_paren) {
@@ -130,6 +135,10 @@ void output_decl(std::ostream& os, const std::string& id, const type& t) {
             if (i) os << ", ";
             os << fi.params()[i];
         }
+        if (fi.variadic()) {
+            if (!fi.params().empty()) os << ", ";
+            os << "...";
+        }
         os << ")";
         break;
     }
@@ -162,6 +171,10 @@ std::ostream& operator<<(std::ostream& os, const function_info& fi) {
     for (size_t i = 0; i < fi.params().size(); ++i) {
         if (i) os << ", ";
         os << fi.params()[i];
+    }
+    if (fi.variadic()) {
+        if (!fi.params().empty()) os << ", ";
+        os << "...";
     }
     return os << ")";
 }
