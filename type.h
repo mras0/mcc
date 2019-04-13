@@ -63,6 +63,10 @@ constexpr bool is_integral(ctype t) {
     return base_type(t) >= ctype::plain_char_t && base_type(t) <= ctype::long_long_t;
 }
 
+constexpr bool is_arithmetic(ctype t) {
+    return base_type(t) >= ctype::plain_char_t && base_type(t) <= ctype::long_double_t;
+}
+
 void output_flags(std::ostream& os, ctype t);
 
 ctype common_type(ctype l, ctype r);

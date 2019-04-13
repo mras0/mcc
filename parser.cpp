@@ -99,7 +99,7 @@ private:
         return false;
     }
 
-    std::vector<decl> parse_declaration() {
+    std::vector<std::unique_ptr<init_decl>> parse_declaration() {
         // declaration
         //    declaration_specifiers init-declarator-list? ';'
         // init-declarator-list
@@ -120,7 +120,7 @@ private:
             return {};
         }
 
-        std::vector<decl> decls;
+        std::vector<std::unique_ptr<init_decl>> decls;
         for (;;) {
             auto d = parse_declarator(ds);
 
@@ -144,7 +144,19 @@ private:
                 std::cout << "Ignoring bitfield: " << *e << "\n";
             }
 
-            decls.push_back(d);
+            if (current().type() == token_type::eq) {
+                next();
+                decls.push_back(std::make_unique<init_decl>(std::move(d), parse_assignment_expression()));
+            } else if (current().type() == token_type::lbrace) {
+                if (d.t()->base() == ctype::function_t) {
+                    decls.push_back(std::make_unique<init_decl>(std::move(d), parse_compound_statement()));
+                    return decls;
+                } else {
+                    NOT_IMPLEMENTED(d << " " << current());
+                }
+            } else {
+                decls.push_back(std::make_unique<init_decl>(std::move(d)));
+            }
 
             if (current().type() != token_type::comma) {
                 break;
@@ -152,12 +164,6 @@ private:
             next();
         }
 
-        if (decls.size() != 1 || decls[0].t()->base() != ctype::function_t || current().type() != token_type::lbrace) {
-            EXPECT(semicolon);
-            return decls;
-        }
-        std::cout << "Ignoring function body of " << decls[0] << "\n";
-        (void)parse_compound_statement();
         return decls;
     }
 
@@ -443,7 +449,12 @@ private:
         std::vector<decl> decls;
         while (current().type() != token_type::rbrace) {
             auto ds = parse_declaration();
-            decls.insert(decls.end(), ds.begin(), ds.end());
+            for (auto& d: ds) {
+                if (d->has_init_val()) {
+                    NOT_IMPLEMENTED(*d);
+                }
+                decls.push_back(d->d());
+            }
         }
         return decls;
     }
@@ -523,8 +534,19 @@ private:
             auto index = parse_expression();
             EXPECT(rbracket);
             return std::make_unique<array_access_expression>(std::move(e), std::move(index));
-        } else if (t == token_type::lparen
-            || t == token_type::dot
+        } else if (t == token_type::lparen) {
+            next();
+            std::vector<expression_ptr> args;
+            while (current().type() != token_type::rparen) {
+                args.push_back(parse_assignment_expression());
+                if (current().type() != token_type::comma) {
+                    break;
+                }
+                next();
+            }
+            EXPECT(rparen);
+            return std::make_unique<function_call_expression>(std::move(e), std::move(args));
+        } else if (t == token_type::dot
             || t == token_type::arrow
             || t == token_type::plusplus
             || t == token_type::minusminus) {
@@ -623,6 +645,9 @@ private:
     //
 
     statement_ptr parse_statement() {
+        if (is_current_type_name()) {
+            NOT_IMPLEMENTED("Decl: " << current());
+        }
         const auto t = current().type();
         switch (t) {
             // selection-statement
@@ -647,8 +672,11 @@ private:
                 return std::make_unique<return_statement>(std::move(e));
             }
         default:
-            NOT_IMPLEMENTED(t);
+            break;
         }
+        auto es = std::make_unique<expression_statement>(parse_expression());
+        EXPECT(semicolon);
+        return es;
     }
 
     std::unique_ptr<compound_statement> parse_compound_statement() {
