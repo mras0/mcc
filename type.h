@@ -18,6 +18,7 @@ enum class ctype {
 
     // Order of the type is significant
     void_t,
+    bool_t,
     plain_char_t,
     char_t,
     short_t,
@@ -49,6 +50,7 @@ enum class ctype {
     inline_f   = 1<<17,
 
     storage_f = extern_f | static_f | typedef_f | register_f | inline_f,
+    cvr_f = const_f|volatile_f|restrict_f,
 
     bitfield_mask = 0x3f << bitfield_shift,
 };

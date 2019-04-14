@@ -26,6 +26,7 @@ std::ostream& operator<<(std::ostream& os, ctype t) {
     switch (t & ctype::base_f) {
     case ctype::none:          os << "none"; break;
     case ctype::void_t:        os << "void"; break;
+    case ctype::bool_t:        os << "bool"; break;
     case ctype::plain_char_t:  os << "char"; break;
     case ctype::char_t:        os << "char"; break;
     case ctype::short_t:       os << "short"; break;
@@ -36,6 +37,7 @@ std::ostream& operator<<(std::ostream& os, ctype t) {
     case ctype::double_t:      os << "double"; break;
     case ctype::long_double_t: os << "long double"; break;
     case ctype::pointer_t:     os << "pointer"; break;
+    case ctype::reference_t:   os << "reference"; break;
     case ctype::array_t:       os << "array"; break;
     case ctype::struct_t:      os << "struct"; break;
     case ctype::union_t:       os << "union"; break;
@@ -52,8 +54,10 @@ std::ostream& operator<<(std::ostream& os, ctype t) {
 
 ctype integral_promotion(ctype t) {
     assert(is_integral(t));
-    if (t < ctype::int_t) {
-        NOT_IMPLEMENTED(t);
+    if (base_type(t) < ctype::int_t) {
+        // If int can represent the entire range of values of the original type (or the range of values of the original bit field),
+        // the value is converted to type int. Otherwise the value is converted to unsigned int. 
+        return ctype::int_t;
     }
     return t;
 }
@@ -76,13 +80,12 @@ ctype common_type(ctype l, ctype r) {
     const auto br = base_type(r);
     // If both have the same signedless
     if ((l & ctype::unsigned_f) == (r & ctype::unsigned_f)) {
-        NOT_IMPLEMENTED(l << " <> " << r << " max_rank: " << (bl < br ? r : l));
         return bl < br ? r : l;
     }
     // Signs are different
     const auto [urank, srank] = !!(l & ctype::unsigned_f) ? std::pair{ bl, br } : std::pair{ br, bl };
-    if (urank > srank) {
-        // Unsigned operand's rank is greater
+    if (urank >= srank) {
+        // Unsigned operand's rank is greater or equal
         return urank | ctype::unsigned_f;
     }
     
@@ -108,12 +111,15 @@ std::ostream& operator<<(std::ostream& os, type t) {
     switch (t.base()) {
     case ctype::pointer_t:
     case ctype::reference_t:
-        os << *t.pointer_val();
-        os << (t.base() == ctype::pointer_t ? "*" : "&");
-        if (!!(t.ct() & (ctype::const_f|ctype::volatile_f|ctype::restrict_f))) {
-            os << " ";
+        if (t.base() == ctype::pointer_t) {
+            os << *t.pointer_val() << "*";
+        } else {
+            os << *t.reference_val() << "&";
         }
-        output_flags(os, t.ct());
+        if (!!(t.ct() & ctype::cvr_f)) {
+            os << " ";
+            output_flags(os, t.ct());
+        }
         return os;
     case ctype::array_t:
         output_flags(os, t.ct());
@@ -147,10 +153,10 @@ void output_decl(std::ostream& os, const std::string& id, const type& t) {
             oss << "(";
         }
         oss << (t.base() == ctype::pointer_t ? "*" : "&");
-        if (!!(t.ct() & (ctype::const_f|ctype::volatile_f|ctype::restrict_f))) {
+        if (!!(t.ct() & ctype::cvr_f)) {
             oss << " ";
+            output_flags(os, t.ct());
         }
-        output_flags(os, t.ct());
         oss << id;
         if (need_paren) {
             oss << ")";

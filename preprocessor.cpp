@@ -1107,7 +1107,12 @@ void preprocessor::next() {
 }
 
 void define_standard_headers(source_manager& sm) {
-    sm.define_standard_headers("assert.h", "");
+    sm.define_standard_headers("assert.h", R"(
+#ifndef _ASSERT_H
+#define _ASSERT_H
+#define assert(e)
+#endif
+)");
     sm.define_standard_headers("complex.h", "");
     sm.define_standard_headers("ctype.h", "");
     sm.define_standard_headers("errno.h", "");
@@ -1170,11 +1175,22 @@ typedef struct _FILE FILE;
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
+extern int printf(const char*, ...);
 #endif
 )");
     sm.define_standard_headers("stdlib.h", "");
     sm.define_standard_headers("stdnoreturn.h", "");
-    sm.define_standard_headers("string.h", "");
+    sm.define_standard_headers("string.h", R"(
+#ifndef _STRING_H
+#define _STRING_H
+#include <stddef.h>
+extern void*    memcpy(void*, const void*, size_t);
+extern void*    memmove(void*, const void*, size_t);
+extern void*    memset(void*, int, size_t);
+extern int      memcmp(const void*, const void*, size_t);
+extern size_t   strlen(const char*);
+#endif
+)");
     sm.define_standard_headers("tgmath.h", "");
     sm.define_standard_headers("threads.h", "");
     sm.define_standard_headers("time.h", R"(
@@ -1203,7 +1219,16 @@ typedef long long time_t;
 void define_posix_headers(source_manager& sm) {
     sm.define_standard_headers("dlfcn.h", "");
     sm.define_standard_headers("fcntl.h", "");
-    sm.define_standard_headers("unistd.h", "");
+    sm.define_standard_headers("unistd.h", R"(
+#ifndef _UNISTD_H
+#define _UNISTD_H
+#include <stddef.h>
+extern ssize_t read(int, void*, size_t);
+extern ssize_t write(int, const void*, size_t);
+extern int open(const char*, int, ...);
+extern int close(int);
+#endif
+)");
     sm.define_standard_headers("sys/stat.h", "");
     sm.define_standard_headers("sys/time.h", "");
     sm.define_standard_headers("sys/types.h", "");

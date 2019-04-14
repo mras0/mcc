@@ -14,6 +14,8 @@ class statement;
 using expression_ptr = std::unique_ptr<expression>;
 using statement_ptr = std::unique_ptr<statement>;
 
+class symbol_info;
+
 //
 // Expression
 //
@@ -22,24 +24,39 @@ class expression {
 public:
     virtual ~expression() {}
 
+    const std::shared_ptr<const type>& expression_type() const { return expression_type_; }
+    void set_expression_type(const std::shared_ptr<const type>& t) const {
+        assert(!expression_type_ && t);
+        const_cast<expression&>(*this).expression_type_ = t;
+    }
+
     friend std::ostream& operator<<(std::ostream& os, const expression& e) {
         e.do_print(os);
         return os;
     }
 private:
     virtual void do_print(std::ostream& os) const = 0;
+    std::shared_ptr<const type> expression_type_;
 };
 
 class identifier_expression : public expression {
 public:
-    explicit identifier_expression(const std::string& id) : id_{id} {
+    explicit identifier_expression(const std::string& id) : id_{id}, sym_{nullptr} {
         assert(!id_.empty());
     }
 
     const std::string& id() const { return id_; }
 
+    symbol_info* symbol() const { return const_cast<symbol_info*>(sym_); }
+
+    void set_symbol(symbol_info& sym) const {
+        assert(!sym_);
+        const_cast<identifier_expression&>(*this).sym_ = &sym;
+    }
+
 private:
     std::string id_;
+    symbol_info* sym_;
 
     void do_print(std::ostream& os) const override {
         os << id_;
@@ -83,6 +100,9 @@ class string_lit_expression : public expression {
 public:
     explicit string_lit_expression(const std::string& text) : text_(text) {
     }
+
+    const std::string& text() const { return text_; }
+
 private:
     std::string text_;
     void do_print(std::ostream& os) const override;
@@ -117,7 +137,7 @@ public:
         assert(f_ && std::none_of(args.begin(), args.end(), [](auto& a) {return !a; }));
     }
     const expression& f() const { return *f_; }
-    const std::vector<expression_ptr>& args() { return args_; }
+    const std::vector<expression_ptr>& args() const { return args_; }
 private:
     expression_ptr f_;
     std::vector<expression_ptr> args_;
@@ -309,6 +329,12 @@ public:
     }
 
     const statement& s() { return *s_; }
+
+    bool is_default_label() const { return val_.index() == 0; }
+    bool is_case_label()    const { return val_.index() == 2; }
+    bool is_normal_label()  const { return val_.index() == 1; }
+
+    const std::string& label() const { assert(is_normal_label()); return std::get<1>(val_); }
 
 private:
     std::variant<std::monostate, std::string, expression_ptr> val_;

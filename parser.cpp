@@ -683,7 +683,7 @@ private:
             }
             auto pointee = std::make_shared<type>(*t);
             pointee->remove_flags(ctype::storage_f);
-            t = std::make_shared<type>(pt, t);
+            t = std::make_shared<type>(pt, pointee);
         }
         return parse_direct_declarator(t);
     }
@@ -754,6 +754,12 @@ private:
                 break;
             }
             next();
+        }
+        if (arg_types.empty()) {
+            variadic = true;
+        }
+        if (!variadic && arg_types.size() == 1 && arg_types[0].id().empty() && arg_types[0].t()->base() == ctype::void_t) {
+            arg_types.clear();
         }
         return std::make_unique<function_info>(return_type, arg_types, variadic);
     }
