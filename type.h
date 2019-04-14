@@ -28,6 +28,7 @@ enum class ctype {
     double_t,
     long_double_t,
     pointer_t, // Must be first non-basic type in enum
+    reference_t,
     array_t,
     struct_t,
     union_t,
@@ -104,7 +105,7 @@ public:
     }
 
     explicit type(ctype t, const std::shared_ptr<const type>& pointee) : t_{t}, val_{pointee} {
-        assert(base_type(t_) == ctype::pointer_t);
+        assert(base_type(t_) == ctype::pointer_t || base_type(t_) == ctype::reference_t);
     }
 
     explicit type(ctype t, const std::shared_ptr<const array_info>& array_inf) : t_{t}, val_{array_inf} {
@@ -150,6 +151,11 @@ public:
 
     const std::shared_ptr<const type>& pointer_val() const {
         assert(base_type(t_) == ctype::pointer_t);
+        return std::get<1>(val_);
+    }
+
+    const std::shared_ptr<const type>& reference_val() const {
+        assert(base_type(t_) == ctype::reference_t);
         return std::get<1>(val_);
     }
 

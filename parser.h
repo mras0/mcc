@@ -243,6 +243,22 @@ private:
     void do_print(std::ostream& os) const override;
 };
 
+#define EXPRESSION_TYPES(X) \
+    X(identifier) \
+    X(const_int) \
+    X(const_float) \
+    X(string_lit) \
+    X(initializer) \
+    X(array_access) \
+    X(function_call) \
+    X(access) \
+    X(sizeof) \
+    X(prefix) \
+    X(postfix) \
+    X(cast) \
+    X(binary) \
+    X(conditional)
+
 //
 // Statement
 //
@@ -456,6 +472,23 @@ private:
     void do_print(std::ostream& os) const override;
 };
 
+#define STATEMENT_TYPES(X) \
+    X(empty) \
+    X(declaration) \
+    X(labeled) \
+    X(compound) \
+    X(expression) \
+    X(if) \
+    X(switch) \
+    X(while) \
+    X(do) \
+    X(for) \
+    X(goto) \
+    X(continue) \
+    X(break) \
+    X(return)
+
+
 //
 // Declaration
 //
@@ -506,6 +539,23 @@ private:
 //
 
 std::vector<std::unique_ptr<init_decl>> parse(source_manager& sm, const source_file& source);
+
+template<typename V>
+auto visit(V&& v, const expression& e) {
+#define DISPATCH(t) if (auto p = dynamic_cast<const t##_expression*>(&e)) return v(*p);
+    EXPRESSION_TYPES(DISPATCH);
+#undef DISPATCH
+    throw std::runtime_error("Unknown expression");
+}
+
+template<typename V>
+auto visit(V&& v, const statement& s) {
+#define DISPATCH(t) if (auto p = dynamic_cast<const t##_statement*>(&s)) return v(*p);
+    STATEMENT_TYPES(DISPATCH);
+#undef DISPATCH
+    throw std::runtime_error("Unknown statement");
+}
+
 
 } // namespace mcc
 

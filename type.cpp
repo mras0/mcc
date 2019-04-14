@@ -106,9 +106,10 @@ void type::modify_inner(const std::shared_ptr<const type>& t) {
 
 std::ostream& operator<<(std::ostream& os, type t) {
     switch (t.base()) {
-    case ctype::pointer_t: 
+    case ctype::pointer_t:
+    case ctype::reference_t:
         os << *t.pointer_val();
-        os << "*";
+        os << (t.base() == ctype::pointer_t ? "*" : "&");
         if (!!(t.ct() & (ctype::const_f|ctype::volatile_f|ctype::restrict_f))) {
             os << " ";
         }
@@ -137,6 +138,7 @@ std::ostream& operator<<(std::ostream& os, type t) {
 void output_decl(std::ostream& os, const std::string& id, const type& t) {
     switch (t.base()) {
     case ctype::pointer_t:
+    case ctype::reference_t:
     {
         const auto& pointee = *t.pointer_val();
         const bool need_paren = pointee.base() == ctype::array_t || pointee.base() == ctype::function_t;
@@ -144,9 +146,9 @@ void output_decl(std::ostream& os, const std::string& id, const type& t) {
         if (need_paren) {
             oss << "(";
         }
-        oss << "*";
+        oss << (t.base() == ctype::pointer_t ? "*" : "&");
         if (!!(t.ct() & (ctype::const_f|ctype::volatile_f|ctype::restrict_f))) {
-            os << " ";
+            oss << " ";
         }
         output_flags(os, t.ct());
         oss << id;
@@ -184,7 +186,10 @@ void output_decl(std::ostream& os, const std::string& id, const type& t) {
         break;
     }
     default:
-        os << t << " " << id;
+        os << t;
+        if (!id.empty()) {
+            os << " " << id;
+        }
         break;
     }
 }

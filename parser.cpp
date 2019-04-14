@@ -1294,7 +1294,7 @@ size_t parser::sizeof_type(const type& t) {
     case ctype::char_t:         return 1;
     case ctype::short_t:        return 2;
     case ctype::int_t:          return 4;
-    case ctype::long_t:         return 8;
+    case ctype::long_t:         return 4;
     case ctype::long_long_t:    return 8;
     case ctype::float_t:        return 4;
     case ctype::double_t:       return 8;

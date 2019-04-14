@@ -86,6 +86,44 @@ int operator_precedence(token_type t) {
     }
 }
 
+bool is_assignment_op(token_type t) {
+    switch (t) {
+    case token_type::eq:
+    case token_type::pluseq:
+    case token_type::minuseq:
+    case token_type::stareq:
+    case token_type::diveq:
+    case token_type::modeq:
+    case token_type::lshifteq:
+    case token_type::rshifteq:
+    case token_type::andeq:
+    case token_type::xoreq:
+    case token_type::oreq:
+        return true;
+    default:
+        return false;
+    }
+}
+
+token_type without_assignment(token_type t) {
+    assert(is_assignment_op(t) && t != token_type::eq);
+    switch (t) {
+    case token_type::pluseq:     return token_type::plus;
+    case token_type::minuseq:    return token_type::minus;
+    case token_type::stareq:     return token_type::star;
+    case token_type::diveq:      return token_type::div;
+    case token_type::modeq:      return token_type::mod;
+    case token_type::lshifteq:   return token_type::lshift;
+    case token_type::rshifteq:   return token_type::rshift;
+    case token_type::andeq:      return token_type::and_;  
+    case token_type::xoreq:      return token_type::xor_;
+    case token_type::oreq:       return token_type::or_;    
+    default:
+        NOT_IMPLEMENTED(t);
+    }
+}
+
+
 std::ostream& operator<<(std::ostream& os, const_int_val civ) {
     os << civ.val;
     if (!!(civ.type & ctype::unsigned_f)) {
@@ -107,7 +145,7 @@ const_int_val cast(const const_int_val& val, ctype new_type) {
         NOT_IMPLEMENTED(val << " " << new_type);
     }
     const_int_val res{val.val, new_type};
-    if (base_type(val.type) > new_type) {
+    if (base_type(val.type) > base_type(new_type)) {
         // Chop off bits while maintaining invariants
         NOT_IMPLEMENTED(val << " " << new_type);
     }
