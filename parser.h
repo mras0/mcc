@@ -14,8 +14,6 @@ class statement;
 using expression_ptr = std::unique_ptr<expression>;
 using statement_ptr = std::unique_ptr<statement>;
 
-class symbol_info;
-
 //
 // Expression
 //
@@ -24,39 +22,24 @@ class expression {
 public:
     virtual ~expression() {}
 
-    const std::shared_ptr<const type>& expression_type() const { return expression_type_; }
-    void set_expression_type(const std::shared_ptr<const type>& t) const {
-        assert(!expression_type_ && t);
-        const_cast<expression&>(*this).expression_type_ = t;
-    }
-
     friend std::ostream& operator<<(std::ostream& os, const expression& e) {
         e.do_print(os);
         return os;
     }
 private:
     virtual void do_print(std::ostream& os) const = 0;
-    std::shared_ptr<const type> expression_type_;
 };
 
 class identifier_expression : public expression {
 public:
-    explicit identifier_expression(const std::string& id) : id_{id}, sym_{nullptr} {
+    explicit identifier_expression(const std::string& id) : id_{id} {
         assert(!id_.empty());
     }
 
     const std::string& id() const { return id_; }
 
-    symbol_info* symbol() const { return const_cast<symbol_info*>(sym_); }
-
-    void set_symbol(symbol_info& sym) const {
-        assert(!sym_);
-        const_cast<identifier_expression&>(*this).sym_ = &sym;
-    }
-
 private:
     std::string id_;
-    symbol_info* sym_;
 
     void do_print(std::ostream& os) const override {
         os << id_;

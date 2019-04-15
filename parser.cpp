@@ -216,29 +216,172 @@ void return_statement::do_print(std::ostream& os) const {
 #define EXPECT(tok) do { if (current().type() != token_type::tok) NOT_IMPLEMENTED("Expected " << token_type::tok << " got " << current()); next(); } while (0)
 #define TRACE(msg) std::cout << __FILE__ << ":" << __LINE__ << ": " << __func__ <<  " Current: " << current() << " " << msg << "\n"
 
+// Label names have function scope
+// Tag names can be scope but are otherwise global (no shadowing allowed)
+// Orignary names can shadow (but are still disallowed in the same scope)
+
+using type_ptr = std::shared_ptr<const type>;
+using tag_info_ptr = std::shared_ptr<tag_info_type>;
+
+bool redecl_type_compare(const type& l, const type& r) {
+    if (l.base() != r.base()) {
+        return false;
+    }
+    if (l.ct() != r.ct()) {
+        // It's OK if later declarations drop extern/static
+        const auto old_storage_flags = l.ct() & (ctype::extern_f|ctype::storage_f);
+        if (l.ct() != (r.ct() | old_storage_flags)) {
+            return false;
+        }
+    }
+    const auto b = l.base();
+    if (b < ctype::pointer_t) {
+        return true;
+    } else if (b == ctype::pointer_t) {
+        const auto& lp = *l.pointer_val();
+        const auto& rp = *r.pointer_val();
+        return redecl_type_compare(lp, rp);
+    } else if (b == ctype::struct_t) {
+        return &l.struct_val() == &r.struct_val();
+    } else if (b == ctype::union_t) {
+        return &l.union_val() == &r.union_val();
+    } else if (b == ctype::function_t) {
+        const auto& lf = l.function_val();
+        const auto& rf = r.function_val();
+        if (lf.variadic() ^ rf.variadic()) {
+            return false;
+        }
+        if (!redecl_type_compare(*lf.ret_type() , *rf.ret_type())) {
+            return false;
+        }
+        if (lf.params().size() != rf.params().size()) {
+            return false;
+        }
+        for (size_t i = 0, sz = lf.params().size(); i < sz; ++i) {
+            if (!redecl_type_compare(*lf.params()[i].t(), *rf.params()[i].t())) {
+                return false;
+            }
+        }
+        return true;
+    } else if (b == ctype::array_t) {
+        const auto& la = l.array_val();
+        const auto& ra = r.array_val();
+        return la.bound() == ra.bound() && redecl_type_compare(*la.t(), *ra.t());
+    }
+    NOT_IMPLEMENTED(l << " <> " << r);
+}
+
+class symbol {
+public:
+    explicit symbol(const std::string_view id)
+        : id_{id}
+        , declaration_{nullptr}
+        , tag_info_{nullptr}
+        , definition_{nullptr}
+        , civ_{0, ctype::none} {
+    }
+
+    const std::string& id() const { return id_; }
+    type_ptr decl_type() const { return declaration_; }
+    const tag_info_ptr& tag_info() const { return tag_info_; }
+
+    bool has_const_int_def() const { return civ_.type != ctype::none; }
+    const const_int_val& const_int_def() { assert(has_const_int_def()); return civ_; }
+
+    void declare(const type_ptr& t) {
+        assert(t);
+        if (declaration_) {
+            if (!redecl_type_compare(*declaration_, *t)) {
+                NOT_IMPLEMENTED(id_ << " already declared as " << *declaration_ << " invalid redeclaration as " << *t);
+            }
+            return;
+        }
+        declaration_ = t;
+    }
+
+    void define(init_decl& id) {
+        assert(id.d().id() == id_);
+        declare(id.d().t());
+        if (!id.has_init_val()) {
+            return;
+        }
+        if (definition_) {
+            NOT_IMPLEMENTED(id_ << " already defined as " << *definition_ << " invalid redefinition as " << id);
+        }
+        if (civ_.type != ctype::none) {
+            NOT_IMPLEMENTED(id_ << " already defined as " << civ_ << " invalid redefinition as " << id);
+        }
+        definition_ = &id;
+    }
+
+    void define(const const_int_val& civ) {
+        if (!declaration_ || civ.type != declaration_->ct()) {
+            NOT_IMPLEMENTED("Invalid definition of " << id() << " as " << civ);
+        }
+        if (definition_) {
+            NOT_IMPLEMENTED(id_ << " already defined as " << *definition_ << " invalid redefinition as " << civ);
+        }
+        if (civ_.type != ctype::none) {
+            NOT_IMPLEMENTED(id_ << " already defined as " << civ_ << " invalid redefinition as " << civ);
+        }
+        civ_ = civ;
+    }
+
+    void define_tag_type(const tag_info_ptr& ti) {
+        if (tag_info_) {
+            NOT_IMPLEMENTED(id_ << " already definition as " << tag_info_->base_type() << " invalid redefinition as " << ti->base_type());
+        }
+        tag_info_ = ti;
+    }
+
+private:
+    std::string     id_;
+    type_ptr        declaration_;
+    tag_info_ptr    tag_info_;
+    init_decl*      definition_;
+    const_int_val   civ_;
+};
+
 class scope {
 public:
     explicit scope() {
     }
 
-    void add(const std::string& id, const std::shared_ptr<const type>& t) {
-        if (auto it = vals_.find(id); it != vals_.end()) {
-            const auto type_diff = t->ct() ^ it->second->ct();
-            if (type_diff != ctype::none && type_diff != ctype::static_f && type_diff != ctype::extern_f) {
-                NOT_IMPLEMENTED(*t << " " << id << " already defined as " << *it->second << " (diff: " << type_diff << ")");
-            }
-            return;
-        }
-        vals_.insert({id, t});
+    symbol* find(const std::string_view id) {
+        assert(!id.empty());
+        auto it = std::find_if(symbols_.begin(), symbols_.end(), [id](const auto& s) { return s->id() == id; });
+        return it != symbols_.end() ? it->get() : nullptr;
     }
 
-    std::shared_ptr<const type> lookup(const std::string& id) {
-        auto it = vals_.find(id);
-        return it != vals_.end() ? it->second : nullptr;
+    symbol* find_or_get(const std::string_view id) {
+        assert(!id.empty());
+        if (auto sym = find(id)) {
+            return sym;
+        }
+        symbols_.push_back(std::make_unique<symbol>(id));
+        return symbols_.back().get();
+    }
+
+    void declare(const decl& d) {
+        find_or_get(d.id())->declare(d.t());
+    }
+
+    void declare(const std::string_view id, const tag_info_ptr& tag_info) {
+        find_or_get(id)->define_tag_type(tag_info);
+    }
+
+    void define(init_decl& decl) {
+        find_or_get(decl.d().id())->define(decl);
+    }
+
+    void define(const decl& d, const const_int_val& v) {
+        auto sym = find_or_get(d.id());
+        sym->declare(d.t());
+        sym->define(v);
     }
 
 private:
-    std::map<std::string, std::shared_ptr<const type>> vals_;
+    std::vector<std::unique_ptr<symbol>> symbols_;
 };
 
 class parser {
@@ -259,8 +402,7 @@ public:
                     next();
                     continue;
                 }
-                auto d = parse_declaration();
-                add_scope_decls(d);
+                auto d = parse_declaration(false);
                 res.insert(res.end(), std::make_move_iterator(d.begin()), std::make_move_iterator(d.end()));
             }
             return res;
@@ -278,8 +420,6 @@ public:
 private:
     lexer lex_;
     int unnamed_cnt_ = 0;
-    std::vector<std::shared_ptr<tag_info_type>> tag_types_;
-    std::map<std::string, std::shared_ptr<type>> typedefs_;
     std::vector<std::unique_ptr<scope>> active_scopes_;
 
     class push_scope {
@@ -294,41 +434,27 @@ private:
         parser& p_;
     };
 
-    void add_scope_decl(const std::string& id, const std::shared_ptr<const type>& t) {
+    scope& current_scope() {
         assert(!active_scopes_.empty());
-        assert(!id.empty());
-        active_scopes_.back()->add(id, t);
+        return *active_scopes_.back();
     }
 
-    void add_scope_decls(const std::vector<std::unique_ptr<init_decl>>& ds) {
-        for (const auto& d: ds) {
-            add_scope_decl(d->d().id(), d->d().t());
-        }
-    }
-
-    std::shared_ptr<const type> scope_lookup(const std::string& id) {
+    symbol* id_lookup(const std::string_view id) const {
         assert(!active_scopes_.empty());
         for (auto it = active_scopes_.crbegin(), end = active_scopes_.crend(); it != end; ++it) {
-            if (auto t = (*it)->lookup(id)) {
-                return t;
-            }
-        }
-        NOT_IMPLEMENTED(id << " not found in current scope");
-    }
-
-    std::shared_ptr<tag_info_type> find_tag_type(const std::string_view id) {
-        for (auto& s: tag_types_) {
-            if (s->id() == id) {
-                return s;
+            if (auto sym = (*it)->find(id); sym && sym->decl_type()) {
+                return sym;
             }
         }
         return nullptr;
     }
 
-    std::shared_ptr<type> find_typedef(const std::string& id) const {
-        if (auto it = typedefs_.find(id); it != typedefs_.end()) {
-            assert(!(it->second->ct() & ctype::typedef_f));
-            return it->second;
+    symbol* tag_lookup(const std::string_view id) const {
+        assert(!active_scopes_.empty());
+        for (auto it = active_scopes_.crbegin(), end = active_scopes_.crend(); it != end; ++it) {
+            if (auto sym = (*it)->find(id); sym && sym->tag_info()) {
+                return sym;
+            }
         }
         return nullptr;
     }
@@ -345,26 +471,22 @@ private:
 
     bool is_current_type_name() const {
         const auto t = current().type();
-        if (t == token_type::struct_ || t == token_type::union_ || t == token_type::enum_) {
-            return true;
-        }
-        if (t == token_type::id) {
-            auto id = current().text();
-            if (find_typedef(id)) {
-                return true;
-            }
-            return false;
-        }
         if (is_literal(t)) {
             return false;
-        }
-        if (is_storage_class_specifier(t) || is_type_qualifier(t) || is_type_qualifier(t) || is_simple_type_specifier(t)) {
+        } else if (t == token_type::struct_ || t == token_type::union_ || t == token_type::enum_) {
             return true;
+        } else if (is_storage_class_specifier(t) || is_type_qualifier(t) || is_type_qualifier(t) || is_simple_type_specifier(t)) {
+            return true;
+        } else if (t == token_type::id) {
+            auto sym = id_lookup(current().text());
+            if (sym) {
+                return !!(sym->decl_type()->ct() & ctype::typedef_f);
+            }
         }
         return false;
     }
 
-    std::vector<std::unique_ptr<init_decl>> parse_declaration() {
+    std::vector<std::unique_ptr<init_decl>> parse_declaration(bool parsing_struct_or_union) {
         // declaration
         //    declaration_specifiers init-declarator-list? ';'
         // init-declarator-list
@@ -389,47 +511,53 @@ private:
         for (;;) {
             auto d = parse_declarator(ds);
 
-            if (!!(d.t()->ct() & ctype::typedef_f)) {
-                if (d.id().empty()) {
-                    NOT_IMPLEMENTED(d);
+            if (current().type() == token_type::colon) {
+                // Bitfield
+                next();
+                if (!is_integral(d.t()->base())) {
+                    NOT_IMPLEMENTED("Bitfield for " << d);
                 }
-                if (auto it = typedefs_.find(d.id()); it != typedefs_.end()) {
-                    NOT_IMPLEMENTED(d << " Already defined as " << it->first << " " << it->second);
+                const auto size = const_int_eval(*parse_constant_expression()).val;
+                if (size > 63) {
+                    NOT_IMPLEMENTED(d << ":" << size);
                 }
-                auto t = std::make_shared<type>(*d.t());
-                t->remove_flags(ctype::typedef_f);
-                typedefs_[d.id()] = t;
-            } else {
-                if (current().type() == token_type::colon) {
-                    // Bitfield
-                    next();
-                    if (!is_integral(d.t()->base())) {
-                        NOT_IMPLEMENTED("Bitfield for " << d);
-                    }
-                    const auto size = const_int_eval(*parse_constant_expression()).val;
-                    if (size > 63) {
-                        NOT_IMPLEMENTED(d << ":" << size);
-                    }
-                    auto ct = modified_bitfield(d.t()->ct() | ctype::bitfield_f, static_cast<uint8_t>(size));
-                    d = decl{std::make_shared<type>(ct), d.id()};
-                }
+                auto ct = modified_bitfield(d.t()->ct() | ctype::bitfield_f, static_cast<uint8_t>(size));
+                d = decl{std::make_shared<type>(ct), d.id()};
+            }
 
-                if (current().type() == token_type::lbrace) {
-                    if (d.t()->base() == ctype::function_t) {
-                        if (!decls.empty()) {
-                            NOT_IMPLEMENTED(decls.size() << " " << d);
-                        }
-                        decls.push_back(std::make_unique<init_decl>(std::move(d), parse_compound_statement()));
-                        return decls;
-                    } else {
-                        NOT_IMPLEMENTED(d << " " << current() << " " << decls.size());
+            if (!parsing_struct_or_union) {
+                // To support "struct S* s = malloc(*s)" we need to define "s" before parsing the initializer
+                // Same for int x, *y=&x;
+                current_scope().declare(d);
+            }
+
+            if (current().type() == token_type::lbrace) {
+                if (d.t()->base() == ctype::function_t) {
+                    if (!decls.empty()) {
+                        NOT_IMPLEMENTED(decls.size() << " " << d);
                     }
-                } else if (current().type() == token_type::eq) {
-                    next();
-                    decls.push_back(std::make_unique<init_decl>(std::move(d), parse_initializer()));
+                    if (parsing_struct_or_union) {
+                        NOT_IMPLEMENTED("Function definition in struct/union");
+                    }
+                    push_scope ps{*this}; // Function scope
+                    for (const auto& a: d.t()->function_val().params()) {
+                        current_scope().declare(a);
+                    }
+                    decls.push_back(std::make_unique<init_decl>(std::move(d), parse_compound_statement()));
+                    current_scope().define(*decls.back());
+                    return decls;
                 } else {
-                    decls.push_back(std::make_unique<init_decl>(std::move(d)));
+                    NOT_IMPLEMENTED(d << " " << current() << " " << decls.size());
                 }
+            } else if (current().type() == token_type::eq) {
+                if (parsing_struct_or_union) {
+                    NOT_IMPLEMENTED("Initializer inside struct/union definition");
+                }
+                next();
+                decls.push_back(std::make_unique<init_decl>(std::move(d), parse_initializer()));
+                current_scope().define(*decls.back());
+            } else {
+                decls.push_back(std::make_unique<init_decl>(std::move(d)));
             }
 
             if (current().type() != token_type::comma) {
@@ -562,7 +690,7 @@ private:
 
                 auto make_tag_info = [&]() {
                     assert(!id.empty());
-                    assert(!find_tag_type(id));
+                    assert(!tag_lookup(id));
                     if (t == token_type::struct_)  {
                         tag_type = std::make_shared<struct_info>(id);
                     } else if (t == token_type::union_) {
@@ -572,15 +700,16 @@ private:
                     } else {
                         NOT_IMPLEMENTED(t);
                     }
-                    tag_types_.push_back(tag_type);
+                    current_scope().declare(id, tag_type);
                 };
 
                 if (current().type() == token_type::id) {
                     id = current().text();
                     next();
 
-                    tag_type = find_tag_type(id);
-                    if (!tag_type) {
+                    if (auto sym = tag_lookup(id)) {
+                        tag_type = sym->tag_info();
+                    } else {
                         make_tag_info();
                     }
                 }
@@ -615,14 +744,13 @@ private:
             }
 
             if (t == token_type::id) {
-                if (auto td = find_typedef(current().text())) {
-                    if (res_type->base() != ctype::none) {
-                        NOT_IMPLEMENTED("typedef " << *td << " combine with " << *res_type);
-                    }
-                    auto saved_flags = res_type->ct() & ~ctype::base_f;
-                    res_type = std::make_shared<type>(*td);
-                    res_type->add_flags(saved_flags);
+                auto sym = id_lookup(current().text());
+                if (sym && !!(sym->decl_type()->ct() & ctype::typedef_f)) {
                     next();
+                    auto saved_flags = res_type->ct() & ~ctype::base_f;
+                    res_type = std::make_shared<type>(*sym->decl_type());
+                    res_type->remove_flags(ctype::typedef_f);
+                    res_type->add_flags(saved_flags);
                     continue;
                 }
             }
@@ -767,7 +895,7 @@ private:
     std::vector<decl> parse_struct_declaration_list() {
         std::vector<decl> decls;
         while (current().type() != token_type::rbrace) {
-            auto ds = parse_declaration();
+            auto ds = parse_declaration(true);
             for (auto& d: ds) {
                 if (d->has_init_val()) {
                     NOT_IMPLEMENTED(*d);
@@ -779,7 +907,9 @@ private:
     }
 
     std::vector<enum_value> parse_enum_list() {
-        std::vector<enum_value> vals;        
+        std::vector<enum_value> vals;
+        const auto enum_val_ct = ctype::long_long_t | ctype::const_f;
+        const auto enum_val_t = std::make_shared<type>(enum_val_ct);
         for (int64_t val = 0; current().type() != token_type::rbrace; ++val) {
             if (current().type() != token_type::id) {
                 NOT_IMPLEMENTED("Expected identifier got " << current());
@@ -792,6 +922,7 @@ private:
                 val = cast(const_int_eval(*e), ctype::long_long_t).val;
             }
             vals.push_back(enum_value{id, val});
+            current_scope().define(decl{enum_val_t, id}, const_int_val{static_cast<uint64_t>(val), enum_val_ct});
             if (current().type() != token_type::comma) {
                 break;
             }
@@ -818,6 +949,17 @@ private:
     // Expression
     //
 
+    expression_ptr parse_identifier_expression(const std::string& id) {
+        auto sym = this->id_lookup(id);
+        if (!sym) {
+            NOT_IMPLEMENTED("Unexpected identifier " << id);
+        }
+        if (sym->has_const_int_def()) {
+            return std::make_unique<const_int_expression>(sym->const_int_def());
+        }
+        return std::make_unique<identifier_expression>(id);
+    }
+
     expression_ptr parse_primary_expression() {
         // identifier
         // constant
@@ -827,7 +969,7 @@ private:
         if (t == token_type::id) {
             auto id = current().text();
             next();
-            return std::make_unique<identifier_expression>(id);
+            return parse_identifier_expression(id);
         } else if (t == token_type::const_int) {
             const auto v = current().int_val();
             next();
@@ -1005,8 +1147,7 @@ private:
 
     statement_ptr parse_statement() {
         if (is_current_type_name()) {
-            auto d = parse_declaration();
-            add_scope_decls(d);
+            auto d = parse_declaration(false);
             return std::make_unique<declaration_statement>(std::move(d));
         }
         const auto t = current().type();
@@ -1134,7 +1275,7 @@ private:
                 next();
                 return std::make_unique<labeled_statement>(id, parse_statement());
             }
-            e = parse_expression1(parse_postfix_expression1(std::make_unique<identifier_expression>(id)), operator_precedence(token_type::comma));
+            e = parse_expression1(parse_postfix_expression1(parse_identifier_expression(id)), operator_precedence(token_type::comma));
         } else {
             e = parse_expression();
         }
@@ -1167,7 +1308,7 @@ private:
 };
 
 const_int_val parser::const_int_lookup(const std::string& id) {    
-    for (const auto& tt: tag_types_) {
+/*    for (const auto& tt: tag_types_) {
         if (tt->base_type() != ctype::enum_t) {
             continue;
         }
@@ -1177,7 +1318,7 @@ const_int_val parser::const_int_lookup(const std::string& id) {
                 return const_int_val{static_cast<uint64_t>(v.val()), ctype::long_long_t};
             }
         }
-    }
+    }*/
     NOT_IMPLEMENTED(id);
 }
 
@@ -1266,7 +1407,11 @@ std::shared_ptr<const type> parser::expression_type(const expression& e) {
         }
         NOT_IMPLEMENTED(e << " t: " << *t << " id: " << ae->id());
     } else if (auto ie = dynamic_cast<const identifier_expression*>(&e)) {
-        return scope_lookup(ie->id());
+        auto sym = id_lookup(ie->id());
+        if (!sym || !sym->decl_type()) {
+            NOT_IMPLEMENTED(e);
+        }
+        return sym->decl_type();
     }
     NOT_IMPLEMENTED(e);
 }

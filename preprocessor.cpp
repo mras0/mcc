@@ -405,7 +405,7 @@ public:
                         NOT_IMPLEMENTED("Multiple files open?");
                     }
                     return;
-                }                
+                }
             } else {            
                 if (current_.type() == pp_token_type::punctuation && current_.text() == "#") {
                     internal_next();
@@ -1115,16 +1115,30 @@ void define_standard_headers(source_manager& sm) {
 )");
     sm.define_standard_headers("complex.h", "");
     sm.define_standard_headers("ctype.h", "");
-    sm.define_standard_headers("errno.h", "");
+    sm.define_standard_headers("errno.h", R"(
+#ifndef _ERRNO_H
+#define _ERRNO_H
+extern int _Errno;
+#define errno _Errno
+#endif
+)");
     sm.define_standard_headers("fenv.h", "");
     sm.define_standard_headers("float.h", "");
     sm.define_standard_headers("inttypes.h", R"(
+#ifndef _INTTYPES_H
+#define _INTTYPES_H
 #include <stdint.h>
+#endif
 )");
     sm.define_standard_headers("iso646.h", "");
     sm.define_standard_headers("limits.h", "");
     sm.define_standard_headers("locale.h", "");
-    sm.define_standard_headers("math.h", "");
+    sm.define_standard_headers("math.h", R"(
+#ifndef _MATH_H
+#define _MATH_H
+extern double ldexp(double, int);
+#endif
+)");
     sm.define_standard_headers("setjmp.h", R"(
 #ifndef _SETJMP_H
 #define _SETJMP_H
@@ -1175,20 +1189,45 @@ typedef struct _FILE FILE;
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
-extern int printf(const char*, ...);
+
+extern FILE* _Files[3];
+#define stdin  (_Files[0])
+#define stdout (_Files[1])
+#define stderr (_Files[2])
+
+extern int      printf(const char *, ...);
+extern int      sprintf(char *, const char *, ...);
+extern int      snprintf(char *, size_t, const char *, ...);
+
+extern int      fputs(const char *, FILE *);
+extern int      fprintf(FILE *, const char *, ...);
+extern int      fflush(FILE *);
 #endif
 )");
-    sm.define_standard_headers("stdlib.h", "");
+    sm.define_standard_headers("stdlib.h", R"(
+#ifndef _STDLIB_H
+#define _STDLIB_H
+unsigned long strtoul(const char*, char**, int);
+unsigned long long strtoull(const char*, char**, int);
+
+double strtod(const char*, char**);
+#endif
+)");
     sm.define_standard_headers("stdnoreturn.h", "");
     sm.define_standard_headers("string.h", R"(
 #ifndef _STRING_H
 #define _STRING_H
 #include <stddef.h>
-extern void*    memcpy(void*, const void*, size_t);
-extern void*    memmove(void*, const void*, size_t);
-extern void*    memset(void*, int, size_t);
-extern int      memcmp(const void*, const void*, size_t);
-extern size_t   strlen(const char*);
+extern void    *memchr(const void *, int, size_t);
+extern int      memcmp(const void *, const void *, size_t);
+extern void    *memcpy(void *, const void *, size_t);
+extern void    *memmove(void *, const void *, size_t);
+extern void    *memset(void *, int, size_t);
+extern char    *strcat(char *, const char *);
+extern char    *strchr(const char *, int);
+extern int      strcmp(const char *, const char *);
+extern char    *strcpy(char *, const char *);
+extern size_t   strlen(const char *);
 #endif
 )");
     sm.define_standard_headers("tgmath.h", "");
@@ -1209,6 +1248,9 @@ struct tm {
     int  tm_isdst; // daylight savings flag
 };
 typedef long long time_t;
+
+extern struct tm *localtime(const time_t *);
+extern time_t     time(time_t *);
 #endif
 )");
     sm.define_standard_headers("uchar.h", "");
@@ -1227,6 +1269,7 @@ extern ssize_t read(int, void*, size_t);
 extern ssize_t write(int, const void*, size_t);
 extern int open(const char*, int, ...);
 extern int close(int);
+extern char* getcwd(char*, size_t);
 #endif
 )");
     sm.define_standard_headers("sys/stat.h", "");

@@ -39,6 +39,7 @@ void test_preprocessor() {
         const char* text;
         std::vector<pp_token> expected;
     } test_cases[] = {
+#if 1
         { "//10\n42" , { PP_NUM(42) } },
         { "/*****/42\n/*****/" , { PP_NUM(42) } },
         { "2 \n + 3  \t\v\f\n", { PP_NUM(2), PP_PUNCT("+"), PP_NUM(3) } },
@@ -182,6 +183,16 @@ IS_PAREN(xxx) // Expands to 0
 
     { "#define BLAH(pf,sf) pf ## cc ## sf\nBLAH(,s)\nBLAH(p,)\n", {PP_ID(ccs), PP_ID(pcc)}},
     { "#define X(name) table_ ## name\nX(286_0f)\n", {PP_ID(table_286_0f)}},
+
+#endif
+    { R"(
+# define ELFW(type) ELF##32##_##type
+#define ELF32_ST_BIND(val)		(((unsigned char) (val)) >> 4)
+#define ELF32_ST_TYPE(val)		((val) & 0xf)
+#define ELF32_ST_INFO(bind, type)	(((bind) << 4) + ((type) & 0xf))
+
+ELFW(ST_INFO)(sym_bind, ELFW(ST_TYPE)(esym->st_info));
+)", {} } // (((sym_bind) << 4) + ((((esym->st_info) & 0xf)) & 0xf));
     };
 
     const char* delim = "-----------------------------------\n";
@@ -213,7 +224,7 @@ IS_PAREN(xxx) // Expands to 0
 #undef PP_ID
 
 namespace mcc {
-
+#if 0
 // Unary:
 //    { token_type::and_        , "" }       // &
 //    { token_type::star        , "" }       // *
@@ -909,14 +920,17 @@ private:
     const type_ptr t_size_t     = std::make_shared<type>(ctype::unsigned_f | ctype::long_long_t);
 };
 
+#endif
+
 } // namespace mcc
 
 void process_one(source_manager& sm, const std::string& filename) {
     std::cout << filename << "\n";
     auto decls = parse(sm, sm.load(filename));
-    test_visitor vis{};
+    //test_visitor vis{};
     for (const auto& d: decls) {
-        vis.do_top_level_decl(*d);
+        //vis.do_top_level_decl(*d);
+        std::cout << *d << "\n";
     }
 }
 
