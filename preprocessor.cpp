@@ -4,6 +4,12 @@
 #include <optional>
 #include <map>
 
+//#define PP_DEBUG
+
+#ifdef PP_DEBUG
+#include <iostream>
+#endif
+
 namespace mcc {
 
 const pp_token pp_token::eof{};
@@ -380,6 +386,11 @@ public:
         files_.push_back(std::make_unique<pp_lexer>(source));
         files_.push_back(std::make_unique<pp_lexer>(sm.builtin()));
         next();
+    }
+
+    ~impl() {
+        assert(expanding_.empty());
+        assert(std::uncaught_exceptions() || files_.size() == 1);
     }
 
     std::vector<source_position> position() const {
@@ -775,14 +786,39 @@ private:
         impl& pp_;
     };
 
+    // Suppress expansion of "macro_id" (if non-empty) until the stream has been exhausted
     struct vec_token_stream : token_stream {
-        explicit vec_token_stream(const std::vector<pp_token>& v) : v_{v} {
+        explicit vec_token_stream(const std::vector<pp_token>& v, impl& pp, const std::string& expanding_id) : v_{v}, pp_{pp} {
+            if (!expanding_id.empty() && !v.empty()) {
+                pp_.expanding_.push_back(expanding_id);
+            } else {
+                state_ = 2;
+            }
         }
-        void next() override { assert(index_ < v_.size()); ++index_; }
+        ~vec_token_stream() {
+            assert(state_ != 0);
+            if (!state_) pp_.expanding_.pop_back();
+        }
+        void next() override {
+            assert(index_ < v_.size());
+            ++index_;
+            if (index_ == v_.size()) {
+#ifdef PP_DEBUG
+                std::cout << "Vec stream exhausted\n";
+#endif
+                assert(state_ == 0 || state_ == 2);
+                if (state_ == 0) {
+                    pp_.expanding_.pop_back();
+                    state_ = 1;
+                }
+            }
+        }
         const pp_token& current() const override { return index_ < v_.size() ? v_[index_] : pp_token::eof; }
     private:
         const std::vector<pp_token>& v_;
+        impl& pp_;
         size_t index_ = 0;
+        int state_ = 0;
     };
 
     struct null_token_stream : token_stream {
@@ -811,8 +847,13 @@ private:
         bool first_exhausted_;
     };
 
-    std::vector<pp_token> do_replace(const std::vector<pp_token>& replacement, token_stream& cont_stream) {
-        vec_token_stream tsr{replacement};
+    std::vector<pp_token> do_replace(const std::vector<pp_token>& replacement, const std::string& macro_id, token_stream& cont_stream) {
+#ifdef PP_DEBUG
+        std::cout << "Replacing in {" << macro_id << "}:";
+        for (const auto& t: replacement) std::cout << " " << t;
+        std::cout << "\n";
+#endif
+        vec_token_stream tsr{replacement, *this, macro_id};
         std::vector<pp_token> res;
         while (tsr.current()) {
             if (tsr.current().type() == pp_token_type::identifier && std::find(expanding_.begin(), expanding_.end(), tsr.current().text()) == expanding_.end()) {
@@ -832,6 +873,9 @@ private:
     }
 
     std::vector<pp_token> handle_replace(token_stream& ts, const std::string& macro_id, const macro_definition& def) {
+#ifdef PP_DEBUG
+        std::cout << "Expanding " << macro_id << "\n";
+#endif
         std::vector<pp_token> replacement;
         if (def.params) {
             // Function-like macro
@@ -928,7 +972,7 @@ private:
                             // Expand macros in argument now that we know it's not being combined/stringified
                             // (note: before restricting expansion of "macro_id")
                             null_token_stream null_ts{};
-                            nts = do_replace(nts, null_ts);
+                            nts = do_replace(nts, "", null_ts);
                         }
                         combine_state = combine_none;
                         replacement.insert(replacement.end(), nts.begin(), nts.end());
@@ -966,16 +1010,7 @@ private:
                 }
             }
         }
-        struct push_expanding {
-            explicit push_expanding(impl& pp, const std::string& val) : pp{pp} {
-                pp.expanding_.push_back(val);
-            }
-            ~push_expanding() {
-                pp.expanding_.pop_back();
-            }
-            impl& pp;
-        } pe{*this, macro_id};
-        return do_replace(replacement, ts);
+        return do_replace(replacement, macro_id, ts);
     }
 
     pp_number eval_primary() {

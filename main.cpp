@@ -183,7 +183,6 @@ IS_PAREN(xxx) // Expands to 0
 
     { "#define BLAH(pf,sf) pf ## cc ## sf\nBLAH(,s)\nBLAH(p,)\n", {PP_ID(ccs), PP_ID(pcc)}},
     { "#define X(name) table_ ## name\nX(286_0f)\n", {PP_ID(table_286_0f)}},
-
 #endif
     { R"(
 # define ELFW(type) ELF##32##_##type
@@ -192,7 +191,34 @@ IS_PAREN(xxx) // Expands to 0
 #define ELF32_ST_INFO(bind, type)	(((bind) << 4) + ((type) & 0xf))
 
 ELFW(ST_INFO)(sym_bind, ELFW(ST_TYPE)(esym->st_info));
-)", {} } // (((sym_bind) << 4) + ((((esym->st_info) & 0xf)) & 0xf));
+)",     {
+        // (((sym_bind) << 4) + ((((esym->st_info) & 0xf)) & 0xf));
+        PP_PUNCT("("),
+            PP_PUNCT("("),
+                PP_PUNCT("("),PP_ID(sym_bind),PP_PUNCT(")"),
+                PP_PUNCT("<<"),PP_NUM(4),
+            PP_PUNCT(")"),
+            PP_PUNCT("+"),
+            PP_PUNCT("("),
+                PP_PUNCT("("),
+                    PP_PUNCT("("),
+                        PP_PUNCT("("),
+                            PP_ID(esym),
+                            PP_PUNCT("->"),
+                            PP_ID(st_info),
+                        PP_PUNCT(")"),
+                        PP_PUNCT("&"),
+                        PP_NUM(0xf),
+                    PP_PUNCT(")"),
+                PP_PUNCT(")"),
+                PP_PUNCT("&"),
+                PP_NUM(0xf),
+            PP_PUNCT(")"),
+        PP_PUNCT(")"),
+        PP_PUNCT(";"),
+        } 
+    },
+    { "#define X(a) X(a)\nX(42)", { PP_ID(X), PP_PUNCT("("), PP_NUM(42), PP_PUNCT(")"), } },
     };
 
     const char* delim = "-----------------------------------\n";
