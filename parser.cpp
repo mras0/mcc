@@ -278,7 +278,8 @@ public:
         , declaration_{nullptr}
         , tag_info_{nullptr}
         , definition_{nullptr}
-        , civ_{0, ctype::none} {
+        , civ_{0, ctype::none}
+        , label_state_{0} {
     }
 
     const std::string& id() const { return id_; }
@@ -334,18 +335,40 @@ public:
         tag_info_ = ti;
     }
 
+    void define_label() {
+        if (label_state_ & 2) {
+            NOT_IMPLEMENTED(id_ << " already defined as label");
+        }
+        label_state_ |= 2;
+    }
+
+    void use_label() {
+        label_state_ |= 1;
+    }
+
+    void check_label() const {
+        if (label_state_ == 1) {
+            NOT_IMPLEMENTED(id_ << " used as label but not defined");
+        } else if (label_state_ == 2) {
+            NOT_IMPLEMENTED(id_ << " defined as label but not used"); // Warning...
+        }
+    }
+
 private:
-    std::string     id_;
-    type_ptr        declaration_;
-    tag_info_ptr    tag_info_;
-    init_decl*      definition_;
-    const_int_val   civ_;
+    const std::string   id_;
+    type_ptr            declaration_;
+    tag_info_ptr        tag_info_;
+    init_decl*          definition_;
+    const_int_val       civ_;
+    int                 label_state_;
 };
 
 class scope {
 public:
-    explicit scope() {
+    explicit scope(bool is_function_scope) : is_function_scope_{is_function_scope} {
     }
+
+    bool is_function_scope() const { return is_function_scope_; }
 
     symbol* find(const std::string_view id) {
         assert(!id.empty());
@@ -380,7 +403,15 @@ public:
         sym->define(v);
     }
 
+    void check_labels() {
+        assert(is_function_scope_);
+        for (const auto& sp: symbols_) {
+            sp->check_label();
+        }
+    }
+
 private:
+    const bool is_function_scope_;
     std::vector<std::unique_ptr<symbol>> symbols_;
 };
 
@@ -424,11 +455,14 @@ private:
 
     class push_scope {
     public:
-        explicit push_scope(parser& p) : p_{p} {
-            p_.active_scopes_.push_back(std::make_unique<scope>());
+        explicit push_scope(parser& p, bool is_function_scope = false) : p_{p} {
+            p_.active_scopes_.push_back(std::make_unique<scope>(is_function_scope));
         }
         ~push_scope() {
             p_.active_scopes_.pop_back();
+        }
+        scope& this_scope() {
+            return *p_.active_scopes_.back();
         }
     private:
         parser& p_;
@@ -457,6 +491,16 @@ private:
             }
         }
         return nullptr;
+    }
+
+    symbol* get_label(const std::string_view id) const {
+        assert(!active_scopes_.empty());
+        for (auto it = active_scopes_.crbegin(), end = active_scopes_.crend(); it != end; ++it) {
+            if ((*it)->is_function_scope()) {
+                return (*it)->find_or_get(id);
+            }
+        }
+        NOT_IMPLEMENTED(id);
     }
 
     void next() {
@@ -539,12 +583,13 @@ private:
                     if (parsing_struct_or_union) {
                         NOT_IMPLEMENTED("Function definition in struct/union");
                     }
-                    push_scope ps{*this}; // Function scope
+                    push_scope ps{*this, true}; // Function scope
                     for (const auto& a: d.t()->function_val().params()) {
                         current_scope().declare(a);
                     }
                     decls.push_back(std::make_unique<init_decl>(std::move(d), parse_compound_statement()));
                     current_scope().define(*decls.back());
+                    ps.this_scope().check_labels();
                     return decls;
                 } else {
                     NOT_IMPLEMENTED(d << " " << current() << " " << decls.size());
@@ -1232,6 +1277,8 @@ private:
                 const auto id = current().text();
                 EXPECT(id);
                 EXPECT(semicolon);
+                auto sym = get_label(id);
+                sym->use_label();
                 return std::make_unique<goto_statement>(id);
             }
         case token_type::continue_:
@@ -1273,6 +1320,8 @@ private:
             next();
             if (current().type() == token_type::colon) {
                 next();
+                auto sym = get_label(id);
+                sym->define_label();
                 return std::make_unique<labeled_statement>(id, parse_statement());
             }
             e = parse_expression1(parse_postfix_expression1(parse_identifier_expression(id)), operator_precedence(token_type::comma));
