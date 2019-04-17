@@ -1178,6 +1178,8 @@ extern double ldexp(double, int);
 #ifndef _SETJMP_H
 #define _SETJMP_H
 typedef struct _Jmp_buf jmp_buf[1];
+void   longjmp(jmp_buf, int);
+int    setjmp(jmp_buf);
 #endif
 )");
     sm.define_standard_headers("signal.h", "");
@@ -1186,6 +1188,9 @@ typedef struct _Jmp_buf jmp_buf[1];
 #ifndef _STDARG_H
 #define _STDARG_H
 typedef struct __va_list* va_list;
+#define va_start(v,n)
+#define va_arg(v, t) ((t)0)
+#define va_end(v)
 #endif
 )");
     sm.define_standard_headers("stdatomic.h", "");
@@ -1220,6 +1225,8 @@ typedef unsigned long long int  uintptr_t;
 #ifndef _STDIO_H
 #define _STDIO_H
 #include <stddef.h>
+#include <stdarg.h>
+
 typedef struct _FILE FILE;
 #define SEEK_SET 0
 #define SEEK_CUR 1
@@ -1233,19 +1240,58 @@ extern FILE* _Files[3];
 extern int      printf(const char *, ...);
 extern int      sprintf(char *, const char *, ...);
 extern int      snprintf(char *, size_t, const char *, ...);
-
-extern int      fputs(const char *, FILE *);
-extern int      fprintf(FILE *, const char *, ...);
+extern int      fclose(FILE *);
 extern int      fflush(FILE *);
+extern char    *fgets(char *, int, FILE *);
+extern FILE*    fopen(const char *, const char *);
+extern int      fprintf(FILE *, const char *, ...);
+extern int      fputc(int, FILE *);
+extern int      fputs(const char *, FILE *);
+extern size_t   fread(void *, size_t, size_t, FILE *);
+extern int      fseek(FILE *, long int, int);
+extern long     ftell(FILE *);
+extern size_t   fwrite(const void *, size_t, size_t, FILE *);
+
+extern int      sscanf(const char *, const char *, int, ...);
+extern int      vfprintf(FILE *, const char *, va_list);
+extern int      vprintf(const char *, va_list);
+extern int      vsnprintf(char *, size_t, const char *, va_list);
+extern int      vsprintf(char *, const char *, va_list);
+// POSIX
+extern FILE*    fdopen(int, const char *);
 #endif
 )");
     sm.define_standard_headers("stdlib.h", R"(
 #ifndef _STDLIB_H
 #define _STDLIB_H
-unsigned long strtoul(const char*, char**, int);
-unsigned long long strtoull(const char*, char**, int);
+#include <stddef.h>
 
-double strtod(const char*, char**);
+#define EXIT_SUCCESS 0x00
+#define EXIT_FAILURE 0xff
+
+extern double               atof(const char *);
+extern int                  atoi(const char *);
+extern long                 atol(const char *);
+extern long long            atoll(const char *);
+extern void*                malloc(size_t);
+extern void*                calloc(size_t, size_t);
+extern void*                realloc(void*, size_t);
+extern void                 free(void *);
+extern void                 exit(int);
+
+
+extern long                 strtol(const char*, char**, int);
+extern long long            strtoll(const char*, char**, int);
+extern unsigned long        strtoul(const char*, char**, int);
+extern unsigned long long   strtoull(const char*, char**, int);
+extern float                strtof(const char*, char**);
+extern double               strtod(const char*, char**);
+extern long double          strtold(const char*, char**);
+extern void                 qsort(void*, size_t, size_t, int (*)(const void*,const void*));
+
+// POSIX
+extern char*                getenv(const char *);
+extern int                  remove(const char *);
 #endif
 )");
     sm.define_standard_headers("stdnoreturn.h", "");
@@ -1262,7 +1308,20 @@ extern char    *strcat(char *, const char *);
 extern char    *strchr(const char *, int);
 extern int      strcmp(const char *, const char *);
 extern char    *strcpy(char *, const char *);
+extern char    *strerror(int);
 extern size_t   strlen(const char *);
+extern char    *strncat(char *, const char *, size_t);
+extern int      strncmp(const char *, const char *, size_t);
+extern char    *strncpy(char *, const char *, size_t);
+extern char    *strpbrk(const char *, const char *);
+extern char    *strrchr(const char *, int);
+extern size_t   strspn(const char *, const char *);
+extern char    *strstr(const char *, const char *);
+extern char    *strtok(char *, const char *);
+
+// POSIX
+extern int strcasecmp(const char *s1, const char *s2);
+int strncasecmp(const char *s1, const char *s2, size_t n);
 #endif
 )");
     sm.define_standard_headers("tgmath.h", "");
@@ -1292,24 +1351,60 @@ extern time_t     time(time_t *);
     sm.define_standard_headers("wchar.h", "");
     sm.define_standard_headers("wctype.h", "");
 }
+#include <fcntl.h>
 
 void define_posix_headers(source_manager& sm) {
     sm.define_standard_headers("dlfcn.h", "");
-    sm.define_standard_headers("fcntl.h", "");
+    sm.define_standard_headers("fcntl.h", R"(
+#ifndef _FCNTL_H
+#define _FCNTL_H
+#define O_RDONLY	0x0000
+#define O_WRONLY	0x0001
+#define O_RDWR		0x0002
+
+#define O_CREAT		0x0100
+#define O_EXCL		0x0200
+#define O_NOCTTY	0x0400
+#define O_TRUNC		0x0800
+#define O_APPEND	0x1000
+#define O_NONBLOCK	0x2000
+#endif
+)");
     sm.define_standard_headers("unistd.h", R"(
 #ifndef _UNISTD_H
 #define _UNISTD_H
 #include <stddef.h>
+#include <sys/types.h>
 extern ssize_t read(int, void*, size_t);
 extern ssize_t write(int, const void*, size_t);
 extern int open(const char*, int, ...);
 extern int close(int);
 extern char* getcwd(char*, size_t);
+extern int unlink(const char *pathname); 
+extern off_t lseek(int, off_t, int);
+extern int dup(int);
+extern int execvp(const char *file, char *const argv[]);
 #endif
 )");
-    sm.define_standard_headers("sys/stat.h", "");
-    sm.define_standard_headers("sys/time.h", "");
-    sm.define_standard_headers("sys/types.h", "");
+    sm.define_standard_headers("sys/stat.h", R"(
+#ifndef _SYS_STAT_H
+#define _SYS_STAT_H
+typedef unsigned mode_t;
+extern int chmod(const char *, mode_t);
+#endif
+)");
+    sm.define_standard_headers("sys/time.h", R"(
+#ifndef _SYS_TIME_H
+#define _SYS_TIME_H
+extern int gettimeofday(struct timeval *restrict tp, void *restrict tzp);
+#endif
+)");
+    sm.define_standard_headers("sys/types.h", R"(
+#ifndef _SYS_TYPES_H
+#define _SYS_TYPES_H
+typedef long long off_t;
+#endif
+)");
 }
 
 const char* standard_builtin_text() {

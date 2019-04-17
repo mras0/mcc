@@ -957,6 +957,9 @@ void process_one(source_manager& sm, const std::string& filename) {
     for (const auto& d: decls) {
         //vis.do_top_level_decl(*d);
         std::cout << *d << "\n";
+        if (d->has_init_val() && d->d().t()->base() == ctype::function_t) {
+            std::cout << d->body() << "\n";
+        }
     }
 }
 
