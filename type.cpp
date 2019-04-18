@@ -129,18 +129,23 @@ void output_decl(std::ostream& os, const std::string& id, const type& t) {
         const auto& ai = t.array_val();
         const auto& at = *ai.t();
         output_flags(os, t.ct());
-        output_decl(os, id, at);
-        os << "[";
+        std::ostringstream oss;
+        oss << id;
+        oss << "[";
         if (ai.bound() != array_info::unbounded) {
-            os << ai.bound();
+            oss << ai.bound();
         }
-        os << "]";
+        oss << "]";
+        output_decl(os, oss.str(), at);
         break;
     }
     case ctype::function_t:
     {
         const auto& fi = t.function_val();
         output_flags(os, t.ct());
+        if (fi.ret_type()->base() == ctype::array_t) {
+            NOT_IMPLEMENTED(*fi.ret_type());
+        }
         os << *fi.ret_type() << " " << id << "(";
         for (size_t i = 0; i < fi.params().size(); ++i) {
             if (i) os << ", ";
@@ -168,7 +173,11 @@ std::ostream& operator<<(std::ostream& os, const decl& d) {
 }
 
 std::ostream& operator<<(std::ostream& os, const array_info& ai) {
+    const auto abt = ai.t()->base();
+    const auto paren = abt == ctype::array_t || abt == ctype::function_t;
+    if (paren) os << '(';
     os << *ai.t();
+    if (paren) os << ')';
     if (ai.bound() != array_info::unbounded) {
         return os << "[" << ai.bound() << "]";
     } else {
@@ -432,7 +441,10 @@ bool redecl_type_compare(const type& l, const type& r) {
     } else if (b == ctype::array_t) {
         const auto& la = l.array_val();
         const auto& ra = r.array_val();
-        return la.bound() == ra.bound() && redecl_type_compare(*la.t(), *ra.t());
+        if (!redecl_type_compare(*la.t(), *ra.t())) {
+            return false;
+        }
+        return la.bound() == ra.bound() || la.bound() == array_info::unbounded;
     }
     NOT_IMPLEMENTED(l << " <> " << r);
 }

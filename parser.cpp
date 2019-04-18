@@ -610,8 +610,11 @@ private:
                     NOT_IMPLEMENTED("Initializer inside struct/union definition");
                 }
                 next();
-                auto t = d.t();
-                decls.push_back(std::make_unique<init_decl>(decl_start, std::move(d), parse_initializer(t)));
+                auto init_expr = parse_initializer(d.t());
+                if (d.t()->base() == ctype::array_t) {
+                    d = decl{to_rvalue(init_expr->et()), d.id()}; // Use type of init expression for definition (to get length in case of e.g. `char arr[] = "...";` }
+                }
+                decls.push_back(std::make_unique<init_decl>(decl_start, std::move(d), std::move(init_expr)));
                 current_scope().define(*decls.back());
             } else {
                 decls.push_back(std::make_unique<init_decl>(decl_start, std::move(d)));
@@ -668,7 +671,6 @@ private:
         type_ptr element_t;
         const std::vector<struct_union_member>* ds = nullptr;
         
-
         if (t->base() == ctype::array_t) {
             element_t = t->array_val().t();
         } else if (t->base() == ctype::struct_t || t->base() == ctype::union_t) {
@@ -942,28 +944,44 @@ private:
             id = current().text();
             next();
         }
-        while (current().type() == token_type::lbracket) {
-            auto bound = array_info::unbounded;
-            next();
-            if (current().type() != token_type::rbracket) {
-                auto civ = const_int_eval(*parse_assignment_expression());
-                bound = cast(civ, ctype::long_long_t|ctype::unsigned_f).val;
-                if (civ.val > bound) {
-                    NOT_IMPLEMENTED(civ << " ~~ " << bound  << " array bound was negative?");
+        for (;;) {
+            if (current().type() == token_type::lbracket) {
+                auto bound = array_info::unbounded;
+                next();
+                if (current().type() != token_type::rbracket) {
+                    auto civ = const_int_eval(*parse_assignment_expression());
+                    bound = cast(civ, ctype::long_long_t|ctype::unsigned_f).val;
+                    if (civ.val > bound) {
+                        NOT_IMPLEMENTED(civ << " ~~ " << bound  << " array bound was negative?");
+                    }
                 }
+                EXPECT(rbracket);
+                type_ptr array_type;
+                if (t->base() == ctype::array_t) {
+                    auto temp = t->array_val().bound();
+                    array_type = make_array_t(t->array_val().t(), bound, t->ct() & ~(ctype::storage_f|ctype::base_f));
+                    bound = temp;
+                } else if (t->base() == ctype::function_t) {
+                    NOT_IMPLEMENTED(*t << "[" << bound << "]");
+                } else {
+                    auto temp = std::make_shared<type>(*t);
+                    temp->remove_flags(ctype::storage_f);
+                    array_type = temp;
+                }
+                t = make_array_t(array_type, bound, storage_flags);
+            } else if (current().type() == token_type::lparen) {
+                next();
+                if (t->base() == ctype::function_t || t->base() == ctype::array_t) {
+                    NOT_IMPLEMENTED(*t);
+                }
+                auto return_type = std::make_shared<type>(*t);
+                return_type->remove_flags(ctype::storage_f);
+                auto fi = parse_parameter_type_list(std::move(return_type));
+                EXPECT(rparen);
+                t = std::make_shared<type>(ctype::function_t | storage_flags, std::move(fi));
+            } else {
+                break;
             }
-            EXPECT(rbracket);
-            auto array_type = std::make_shared<type>(*t);
-            array_type->remove_flags(ctype::storage_f);
-            t = make_array_t(array_type, bound, storage_flags);
-        }
-        if (current().type() == token_type::lparen) {
-            next();
-            auto return_type = std::make_shared<type>(*t);
-            return_type->remove_flags(ctype::storage_f);
-            auto fi = parse_parameter_type_list(std::move(return_type));
-            EXPECT(rparen);
-            t = std::make_shared<type>(ctype::function_t | storage_flags, std::move(fi));
         }
         if (inner_type) {
             inner_type->remove_flags(ctype::storage_f);
