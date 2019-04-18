@@ -127,8 +127,10 @@ void output_decl(std::ostream& os, const std::string& id, const type& t) {
     case ctype::array_t:
     {
         const auto& ai = t.array_val();
+        const auto& at = *ai.t();
         output_flags(os, t.ct());
-        os << *ai.t() << " " << id << "[";
+        output_decl(os, id, at);
+        os << "[";
         if (ai.bound() != array_info::unbounded) {
             os << ai.bound();
         }

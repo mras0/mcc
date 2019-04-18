@@ -1187,6 +1187,7 @@ extern double ldexp(double, int);
     sm.define_standard_headers("setjmp.h", R"(
 #ifndef _SETJMP_H
 #define _SETJMP_H
+struct _Jmp_buf {};
 typedef struct _Jmp_buf jmp_buf[1];
 void   longjmp(jmp_buf, int);
 int    setjmp(jmp_buf);

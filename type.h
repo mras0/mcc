@@ -244,13 +244,26 @@ private:
 
 std::ostream& operator<<(std::ostream& os, const tag_info_type& tit);
 
+class struct_union_member : public decl {
+public:
+    explicit struct_union_member(const decl& d, size_t pos) : decl{d}, pos_{pos} {
+    }
+    size_t pos() const { return pos_; }
+private:
+    size_t pos_;
+};
+
 class struct_info : public tag_info_type {
 public:
     explicit struct_info(const std::string& id) : tag_info_type{id} {}
     ctype base_type() const override { return ctype::struct_t; }
-    const std::vector<decl>& members() const { return members_; }
+    const std::vector<struct_union_member>& members() const { return members_; }
+    size_t size() const { return size_; }
+    size_t align() const { return align_; }
 private:
-    std::vector<decl> members_;
+    std::vector<struct_union_member> members_;
+    size_t size_ = 0;
+    size_t align_ = 0;
     friend parser;
 };
 
@@ -258,9 +271,13 @@ class union_info : public tag_info_type {
 public:
     explicit union_info(const std::string& id) : tag_info_type{id} {}
     ctype base_type() const override { return ctype::union_t; }
-    const std::vector<decl>& members() const { return members_; }
+    const std::vector<struct_union_member>& members() const { return members_; }
+    size_t size() const { return size_; }
+    size_t align() const { return align_; }
 private:
-    std::vector<decl> members_;
+    std::vector<struct_union_member> members_;
+    size_t size_ = 0;
+    size_t align_ = 0;
     friend parser;
 };
 

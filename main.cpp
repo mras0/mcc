@@ -1023,12 +1023,15 @@ public:
     }
 
     void handle(const init_decl& id) {
+        if (!id.has_init_val()) {
+            return;
+        }
         const auto& d = id.d();
-        if (id.has_init_val() && d.t()->base() == ctype::function_t) {
-            std::cout << "TODO: Handle " << id.pos() << " " << d << "\n";
+        if (d.t()->base() == ctype::function_t) {
+           // std::cout << "TODO: Handle " << id.pos() << " " << d << "\n";
             handle(id.body());
         } else {
-            // TODO: Handle variables and extern definitions
+            std::cout << d << "\n";
         }
     }
 

@@ -140,19 +140,19 @@ private:
 
 class access_expression : public expression {
 public:
-    explicit access_expression(const source_position& pos, const type_ptr& et, token_type op, expression_ptr&& e, const std::string& id) : expression{pos, et}, op_{op}, e_{std::move(e)}, id_{id} {
+    explicit access_expression(const source_position& pos, const type_ptr& et, token_type op, expression_ptr&& e, const struct_union_member& m) : expression{pos, et}, op_{op}, e_{std::move(e)}, m_{m} {
         assert(op_ == token_type::dot || op_ == token_type::arrow);
-        assert(e_ && !id_.empty());
+        assert(e_ && !m_.id().empty());
     }
 
     token_type op() const { return op_; }
     const expression& e() const { return *e_; }
-    const std::string& id() const { return id_; }
+    const struct_union_member& m() const { return m_; }
 
 private:
     token_type op_;
     expression_ptr e_;
-    std::string id_;
+    const struct_union_member& m_;
 
     void do_print(std::ostream& os) const override;
 };

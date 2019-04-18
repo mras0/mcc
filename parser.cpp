@@ -7,6 +7,11 @@
 
 namespace mcc {
 
+constexpr size_t round_up(size_t val, size_t align) {
+    return (val + align - 1) & ~(align - 1);
+}
+
+
 class push_precedence {
 public:
     explicit push_precedence(std::ostream& os, int precedence) : os_{os}, sf_{os}, need_parenthesis_{sf_.precedence(precedence)} {
@@ -58,7 +63,7 @@ void function_call_expression::do_print(std::ostream& os) const {
 void access_expression::do_print(std::ostream& os) const {
     push_precedence pp{os, 2};
     assert(op_ == token_type::dot || op_ == token_type::arrow);
-    os << *e_ << op_ << id_;
+    os << *e_ << op_ << m_.id();
 }
 
 void sizeof_expression::do_print(std::ostream& os) const {
@@ -219,25 +224,20 @@ void return_statement::do_print(std::ostream& os) const {
 
 using tag_info_ptr = std::shared_ptr<tag_info_type>;
 
-const decl* search_decl(const decl& d, const std::string_view id);
-const decl* search_decl(const type_ptr& t, const std::string_view id) {
+const struct_union_member* search_decl(const type_ptr& t, const std::string_view id) {
     for (const auto& m: struct_union_members(*t)) {
-        if (auto d = search_decl(m, id)) {
-            return d;
+        if (m.id().empty()) {
+            if (auto d = search_decl(m.t(), id)) {
+                return d;
+            }
+        } else if (m.id() == id) {
+            return &m;
         }
     }
     return nullptr;
 }
 
-const decl* search_decl(const decl& d, const std::string_view id) {
-    if (d.id().empty()) {
-        return search_decl(d.t(), id);
-    } else {
-        return d.id() == id ? &d : nullptr;
-    }
-}
-
-const decl& struct_union_member(const type_ptr& t, const std::string_view id) {
+const struct_union_member& find_struct_union_member(const type_ptr& t, const std::string_view id) {
     if (auto d = search_decl(t, id)) {
         return *d;
     }
@@ -666,7 +666,7 @@ private:
         }
 
         type_ptr element_t;
-        const std::vector<decl>* ds = nullptr;
+        const std::vector<struct_union_member>* ds = nullptr;
         
 
         if (t->base() == ctype::array_t) {
@@ -828,11 +828,22 @@ private:
                         }
                         eivs = parse_enum_list();
                     } else {
-                        auto& sds = t == token_type::struct_ ? dynamic_cast<struct_info&>(*tag_type).members_ : dynamic_cast<union_info&>(*tag_type).members_;
-                        if (!sds.empty()) {
-                            NOT_IMPLEMENTED("Redefinition of " << t << " " << id);
+                        const bool is_union  = t == token_type::union_;
+                        auto [members, size, align] = parse_struct_declaration_list(is_union);
+
+                        if (is_union) {
+                            auto& ui = static_cast<struct_info&>(*tag_type);
+                            if (ui.size_) NOT_IMPLEMENTED("Redefinition of " << t << " " << id);
+                            ui.members_ = std::move(members);
+                            ui.size_ = size;
+                            ui.align_ = align;
+                        } else {
+                            auto& si = static_cast<struct_info&>(*tag_type);
+                            if (si.size_) NOT_IMPLEMENTED("Redefinition of " << t << " " << id);
+                            si.members_ = std::move(members);
+                            si.size_ = size;
+                            si.align_ = align;
                         }
-                        sds = parse_struct_declaration_list();
                     }
                     EXPECT(rbrace);
                 } else if (id.empty()) {
@@ -1010,9 +1021,11 @@ private:
         }
     }
 
-    std::vector<decl> parse_struct_declaration_list() {
-        std::vector<decl> decls;
+    std::tuple<std::vector<struct_union_member>, size_t, size_t> parse_struct_declaration_list(bool is_union) {
+        std::vector<struct_union_member> decls;
         std::set<std::string> names;
+        size_t size = 0;
+        size_t max_align = 1, max_size = 0;
         while (current().type() != token_type::rbrace) {
             auto ds = parse_declaration(true);
             for (auto& d: ds) {
@@ -1020,10 +1033,17 @@ private:
                     NOT_IMPLEMENTED(*d);
                 }
                 add_names(names, d->d());
-                decls.push_back(d->d());
+                const auto a = alignof_type(*d->d().t());
+                const auto pos = round_up(size, a);
+                const auto s = sizeof_type(*d->d().t());
+                size = pos + s;
+                max_align = std::max(max_align, a);
+                max_size = std::max(max_size, s);
+                decls.push_back(struct_union_member{d->d(), pos});
             }
         }
-        return decls;
+        if (!size) size=1;
+        return { decls, round_up(is_union ? max_size : size, max_align), max_align };
     }
 
     std::vector<enum_value> parse_enum_list() {
@@ -1168,14 +1188,14 @@ private:
                 next();
                 const auto id = current().text();
                 EXPECT(id);
-                const auto& m = struct_union_member(et, id);
+                const auto& m = find_struct_union_member(et, id);
                 auto mt = m.t();
                 if (!!(et->ct() & ctype::cvr_f)) {
                     std::shared_ptr<type> temp = std::make_shared<type>(*m.t());
                     temp->add_flags(et->ct() & ctype::cvr_f);
                     mt = temp;
                 }
-                e = std::make_unique<access_expression>(expression_start, make_ref_t(m.t()), t, std::move(e), id);
+                e = std::make_unique<access_expression>(expression_start, make_ref_t(m.t()), t, std::move(e), m);
             } else if (t == token_type::plusplus
                 || t == token_type::minusminus) {
                 next();
@@ -1707,12 +1727,12 @@ size_t parser::alignof_type(const type& t) {
     const auto base = t.base();
     if (is_arithmetic(base) || base == ctype::pointer_t) {
         return sizeof_type(t);
-    } else if (base == ctype::struct_t || base == ctype::union_t) {
-        size_t align = 1;
-        for (const auto& m: struct_union_members(t)) {
-            align = std::max(align, alignof_type(*m.t()));
-        }
-        return align;
+    } else if (base == ctype::struct_t) {
+        if (!t.struct_val().size()) NOT_IMPLEMENTED("Use of incomplete type " << t);
+        return t.struct_val().align();
+    } else if (base == ctype::union_t) {
+        if (!t.union_val().size()) NOT_IMPLEMENTED("Use of incomplete type " << t);
+        return t.union_val().align();
     } else if (base == ctype::array_t) {
         return alignof_type(*t.array_val().t());
     } else if (base == ctype::enum_t) {
@@ -1720,10 +1740,6 @@ size_t parser::alignof_type(const type& t) {
     }
 
     NOT_IMPLEMENTED(t);
-}
-
-constexpr size_t round_up(size_t val, size_t align) {
-    return (val + align - 1) & ~(align - 1);
 }
 
 size_t parser::sizeof_type(const type& t) {
@@ -1750,24 +1766,11 @@ size_t parser::sizeof_type(const type& t) {
             return ai.bound() * sizeof_type(*ai.t());
         }
     case ctype::struct_t:
-        {
-            size_t size = 0;
-            size_t max_align = 1;
-            for (const auto& m: t.struct_val().members()) {
-                const auto a = alignof_type(*m.t());
-                size = round_up(size, a) + sizeof_type(*m.t());
-                max_align = std::max(max_align, a);
-            }
-            return round_up(size, max_align);
-        }
+        if (!t.struct_val().size()) NOT_IMPLEMENTED("Use of incomplete type " << t);
+        return t.struct_val().size();
     case ctype::union_t:
-        {
-            size_t size = 0;
-            for (const auto& m: t.union_val().members()) {
-                size = std::max(size, sizeof_type(*m.t()));                
-            }
-            return size;
-        }
+        if (!t.union_val().size()) NOT_IMPLEMENTED("Use of incomplete type " << t);
+        return t.union_val().size();
     case ctype::enum_t:         return sizeof_type(*int_type);
     case ctype::function_t:     NOT_IMPLEMENTED(t);
     default:
