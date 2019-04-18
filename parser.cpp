@@ -220,7 +220,6 @@ void return_statement::do_print(std::ostream& os) const {
 // Tag names can be scope but are otherwise global (no shadowing allowed)
 // Orignary names can shadow (but are still disallowed in the same scope)
 
-using type_ptr = std::shared_ptr<const type>;
 using tag_info_ptr = std::shared_ptr<tag_info_type>;
 
 bool redecl_type_compare(const type& l, const type& r) {
@@ -417,7 +416,7 @@ private:
 
 class parser {
 public:
-    explicit parser(source_manager& sm, const source_file& source) : lex_{sm, source} {
+    explicit parser(source_manager& sm, const source_file& source) : lex_{sm, source}, current_source_pos_{lex_.position()} {        
     }
     ~parser() {
         assert(active_scopes_.empty());
@@ -429,7 +428,7 @@ public:
             std::vector<std::unique_ptr<init_decl>> res;
             while (current().type() != token_type::eof) {
                 if (current().type() == token_type::semicolon) {
-                    std::cout << "Ignoring stray semicolon at " << lex_.position()[0] << "\n";
+                    std::cout << "Ignoring stray semicolon at " << current_source_pos_ << "\n";
                     next();
                     continue;
                 }
@@ -440,7 +439,7 @@ public:
         } catch (const std::exception& e) {
             std::ostringstream oss;
             oss << e.what() << "\n\n";
-            for (const auto& p : lex_.position()) {
+            for (const auto& p : lex_.position_trace()) {
                 oss << p << "\n";
             }
             oss << "Current token: " << current();
@@ -452,6 +451,7 @@ private:
     lexer lex_;
     int unnamed_cnt_ = 0;
     std::vector<std::unique_ptr<scope>> active_scopes_;
+    source_position current_source_pos_;
 
     class push_scope {
     public:
@@ -506,6 +506,7 @@ private:
     void next() {
         //std::cout << "Consuming " << current() << "\n";
         assert(current().type() != token_type::eof);
+        current_source_pos_ = lex_.position();
         lex_.next();
     }
 
@@ -531,6 +532,7 @@ private:
     }
 
     std::vector<std::unique_ptr<init_decl>> parse_declaration(bool parsing_struct_or_union) {
+
         // declaration
         //    declaration_specifiers init-declarator-list? ';'
         // init-declarator-list
@@ -539,6 +541,8 @@ private:
         // init-declarator
         //     declarator
         //     declarator = initializer
+
+        const auto decl_start = current_source_pos_;
 
         const auto ds = parse_declaration_specifiers();
 
@@ -587,7 +591,7 @@ private:
                     for (const auto& a: d.t()->function_val().params()) {
                         current_scope().declare(a);
                     }
-                    decls.push_back(std::make_unique<init_decl>(std::move(d), parse_compound_statement()));
+                    decls.push_back(std::make_unique<init_decl>(decl_start, std::move(d), parse_compound_statement()));
                     current_scope().define(*decls.back());
                     ps.this_scope().check_labels();
                     return decls;
@@ -599,10 +603,10 @@ private:
                     NOT_IMPLEMENTED("Initializer inside struct/union definition");
                 }
                 next();
-                decls.push_back(std::make_unique<init_decl>(std::move(d), parse_initializer()));
+                decls.push_back(std::make_unique<init_decl>(decl_start, std::move(d), parse_initializer()));
                 current_scope().define(*decls.back());
             } else {
-                decls.push_back(std::make_unique<init_decl>(std::move(d)));
+                decls.push_back(std::make_unique<init_decl>(decl_start, std::move(d)));
             }
 
             if (current().type() != token_type::comma) {
@@ -1081,6 +1085,22 @@ private:
         return parse_postfix_expression1(parse_primary_expression());
     }
 
+    expression_ptr parse_sizeof_expression() {
+        if (current().type() != token_type::lparen) {
+            return std::make_unique<sizeof_expression>(parse_unary_expression());
+        }
+        next();
+        if (is_current_type_name()) {
+            auto st = parse_type_name();
+            EXPECT(rparen);                
+            return std::make_unique<sizeof_expression>(st);
+        } else {
+            auto e = parse_expression();
+            EXPECT(rparen);
+            return std::make_unique<sizeof_expression>(std::move(e));
+        }
+    }
+
     expression_ptr parse_unary_expression() {
         const auto t = current().type();
         if (t == token_type::plusplus
@@ -1099,19 +1119,9 @@ private:
         }
         if (t == token_type::sizeof_) {
             next();
-            if (current().type() != token_type::lparen) {
-                return std::make_unique<sizeof_expression>(parse_unary_expression());
-            }
-            next();
-            if (is_current_type_name()) {
-                auto st = parse_type_name();
-                EXPECT(rparen);
-                return std::make_unique<sizeof_expression>(st);
-            } else {
-                auto e = parse_expression();
-                EXPECT(rparen);
-                return std::make_unique<sizeof_expression>(std::move(e));
-            }
+            auto se = parse_sizeof_expression();
+            std::cout << "TODO: const_int_eval(" << *se << ")\n";
+            return se;
         }
         return parse_postfix_expression();
     }
@@ -1191,15 +1201,16 @@ private:
     //
 
     statement_ptr parse_statement() {
+        const auto statement_pos = current_source_pos_;
         if (is_current_type_name()) {
             auto d = parse_declaration(false);
-            return std::make_unique<declaration_statement>(std::move(d));
+            return std::make_unique<declaration_statement>(statement_pos, std::move(d));
         }
         const auto t = current().type();
         switch (t) {
         case token_type::semicolon:
             next();
-            return std::make_unique<empty_statement>();
+            return std::make_unique<empty_statement>(statement_pos);
         case token_type::lbrace:
             return parse_compound_statement();
             // selection-statement
@@ -1220,7 +1231,7 @@ private:
                     push_scope ps{*this};
                     else_s = parse_statement();
                 }
-                return std::make_unique<if_statement>(std::move(cond), std::move(if_s), std::move(else_s));
+                return std::make_unique<if_statement>(statement_pos, std::move(cond), std::move(if_s), std::move(else_s));
             }
         case token_type::switch_:
             {
@@ -1229,7 +1240,7 @@ private:
                 auto e = parse_expression();
                 EXPECT(rparen);
                 push_scope ps{*this};
-                return std::make_unique<switch_statement>(std::move(e), parse_statement());
+                return std::make_unique<switch_statement>(statement_pos, std::move(e), parse_statement());
             }
             // iteration-statement
         case token_type::while_:
@@ -1239,7 +1250,7 @@ private:
                 auto cond = parse_expression();
                 EXPECT(rparen);
                 push_scope ps{*this};
-                return std::make_unique<while_statement>(std::move(cond), parse_statement());
+                return std::make_unique<while_statement>(statement_pos, std::move(cond), parse_statement());
             }
         case token_type::do_:
             {
@@ -1251,7 +1262,7 @@ private:
                 auto cond = parse_expression();
                 EXPECT(rparen);
                 EXPECT(semicolon);
-                return std::make_unique<do_statement>(std::move(cond), std::move(s));
+                return std::make_unique<do_statement>(statement_pos, std::move(cond), std::move(s));
             }
         case token_type::for_:
             {
@@ -1268,7 +1279,7 @@ private:
                     iter = parse_expression();
                 }
                 EXPECT(rparen);
-                return std::make_unique<for_statement>(std::move(init), std::move(cond), std::move(iter), parse_statement());
+                return std::make_unique<for_statement>(statement_pos, std::move(init), std::move(cond), std::move(iter), parse_statement());
             }
             // jump-statement
         case token_type::goto_:
@@ -1279,37 +1290,37 @@ private:
                 EXPECT(semicolon);
                 auto sym = get_label(id);
                 sym->use_label();
-                return std::make_unique<goto_statement>(id);
+                return std::make_unique<goto_statement>(statement_pos, id);
             }
         case token_type::continue_:
             next();
             EXPECT(semicolon);
-            return std::make_unique<continue_statement>();
+            return std::make_unique<continue_statement>(statement_pos);
         case token_type::break_:
             next();
             EXPECT(semicolon);
-            return std::make_unique<break_statement>();
+            return std::make_unique<break_statement>(statement_pos);
         case token_type::return_:
             next();
             if (current().type() == token_type::semicolon) {
                 next();
-                return std::make_unique<return_statement>(nullptr);
+                return std::make_unique<return_statement>(statement_pos, nullptr);
             } else {
                 auto e = parse_expression();
                 EXPECT(semicolon);
-                return std::make_unique<return_statement>(std::move(e));
+                return std::make_unique<return_statement>(statement_pos, std::move(e));
             }
         case token_type::case_:
             {
                 next();
                 auto e = parse_constant_expression();
                 EXPECT(colon);
-                return std::make_unique<labeled_statement>(std::move(e), parse_statement());
+                return std::make_unique<labeled_statement>(statement_pos, std::move(e), parse_statement());
             }
         case token_type::default_:
             next();
             EXPECT(colon);
-            return std::make_unique<labeled_statement>(parse_statement());
+            return std::make_unique<labeled_statement>(statement_pos, parse_statement());
         default:
             break;
         }
@@ -1322,7 +1333,7 @@ private:
                 next();
                 auto sym = get_label(id);
                 sym->define_label();
-                return std::make_unique<labeled_statement>(id, parse_statement());
+                return std::make_unique<labeled_statement>(statement_pos, id, parse_statement());
             }
             e = parse_expression1(parse_postfix_expression1(parse_identifier_expression(id)), operator_precedence(token_type::comma));
         } else {
@@ -1334,10 +1345,11 @@ private:
             std::cout << "Parsed expression: " << *e << "\n";
             throw;
         }
-        return std::make_unique<expression_statement>(std::move(e));
+        return std::make_unique<expression_statement>(statement_pos, std::move(e));
     }
 
     std::unique_ptr<compound_statement> parse_compound_statement() {
+        const auto statement_pos = current_source_pos_;
         push_scope ps{*this};
         std::vector<statement_ptr> ss;
         EXPECT(lbrace);
@@ -1346,7 +1358,7 @@ private:
         }
         assert(current().type() == token_type::rbrace);
         next();
-        return std::make_unique<compound_statement>(std::move(ss));
+        return std::make_unique<compound_statement>(statement_pos, std::move(ss));
     }
 
     const_int_val const_int_lookup(const std::string& id);
@@ -1357,7 +1369,7 @@ private:
 };
 
 const_int_val parser::const_int_lookup(const std::string& id) {    
-/*    for (const auto& tt: tag_types_) {
+    /*for (const auto& tt: tag_types_) {
         if (tt->base_type() != ctype::enum_t) {
             continue;
         }
@@ -1422,11 +1434,13 @@ const_int_val parser::const_int_eval(const expression& e) {
             NOT_IMPLEMENTED(l << " " << be->op() << " " << r);
         }
     } else if (auto se = dynamic_cast<const sizeof_expression*>(&e)) {
+        uint64_t size;
         if (se->arg_is_type()) {
-            NOT_IMPLEMENTED("sizeof " << *se->t());
+            size = sizeof_type(*se->t());
         } else {
-            return const_int_val{sizeof_type(*expression_type(se->e())), ctype::long_long_t | ctype::unsigned_f};
+            size = sizeof_type(*expression_type(se->e()));
         }
+        return const_int_val{size, ctype::long_long_t | ctype::unsigned_f};
     } else if (auto ce = dynamic_cast<const conditional_expression*>(&e)) {
         if (const_int_eval(ce->cond()).val) {
             return const_int_eval(ce->l());

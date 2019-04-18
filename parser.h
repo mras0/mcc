@@ -13,6 +13,7 @@ class expression;
 class statement;
 using expression_ptr = std::unique_ptr<expression>;
 using statement_ptr = std::unique_ptr<statement>;
+using type_ptr = std::shared_ptr<const type>;
 
 //
 // Expression
@@ -149,7 +150,7 @@ private:
 
 class sizeof_expression : public expression {
 public:
-    explicit sizeof_expression(const std::shared_ptr<const type>& t) : val_{t} {
+    explicit sizeof_expression(const type_ptr& t) : val_{t} {
         assert(std::get<0>(val_));
     }
  
@@ -158,11 +159,11 @@ public:
     }
 
     bool arg_is_type() const { return val_.index() == 0; }
-    const std::shared_ptr<const type>& t() const { assert(val_.index()==0); return std::get<0>(val_); }
+    const type_ptr& t() const { assert(val_.index()==0); return std::get<0>(val_); }
     const expression& e() const { assert(val_.index()==1); return *std::get<1>(val_); }
 
 private:
-    std::variant<std::shared_ptr<const type>, expression_ptr> val_;
+    std::variant<type_ptr, expression_ptr> val_;
 
     void do_print(std::ostream& os) const override;
 };
@@ -199,13 +200,13 @@ public:
 
 class cast_expression : public expression {
 public:
-    explicit cast_expression(const std::shared_ptr<const type>& t, expression_ptr&& e) : t_{std::move(t)}, e_{std::move(e)} {
+    explicit cast_expression(const type_ptr& t, expression_ptr&& e) : t_{std::move(t)}, e_{std::move(e)} {
         assert(t_ && e_);
     }
-    const std::shared_ptr<const type>& t() const { return t_; }
+    const type_ptr& t() const { return t_; }
     const expression& e() const { return *e_; }
 private:
-    std::shared_ptr<const type> t_;
+    type_ptr t_;
     expression_ptr e_;
     void do_print(std::ostream& os) const override;
 };
@@ -272,24 +273,32 @@ class statement {
 public:
     virtual ~statement() {}
 
+    const source_position& pos() const { return pos_; }
+
     friend std::ostream& operator<<(std::ostream& os, const statement& e) {
         e.do_print(os);
         return os;
     }
+
+protected:
+    explicit statement(const source_position& pos) : pos_{pos} {
+    }
+
 private:
+    const source_position pos_;
     virtual void do_print(std::ostream& os) const = 0;
 };
 
 class empty_statement : public statement {
 public:
-    explicit empty_statement() {}
+    explicit empty_statement(const source_position& pos) : statement{pos} {}
 private:
     void do_print(std::ostream& os) const override;
 };
 
 class declaration_statement : public statement {
 public:
-    explicit declaration_statement(std::vector<std::unique_ptr<init_decl>>&& ds) : ds_{std::move(ds)} {
+    explicit declaration_statement(const source_position& pos, std::vector<std::unique_ptr<init_decl>>&& ds) : statement{pos}, ds_{std::move(ds)} {
     }
 
     const std::vector<std::unique_ptr<init_decl>>& ds() const { return ds_; }
@@ -301,13 +310,13 @@ private:
 
 class labeled_statement : public statement {
 public:
-    explicit labeled_statement(statement_ptr&& s) : val_{}, s_{std::move(s)} {
+    explicit labeled_statement(const source_position& pos, statement_ptr&& s) : statement{pos}, val_{}, s_{std::move(s)} {
         assert(s_);
     }
-    explicit labeled_statement(const std::string& label, statement_ptr&& s) : val_{label}, s_{std::move(s)} {
+    explicit labeled_statement(const source_position& pos, const std::string& label, statement_ptr&& s) : statement{pos}, val_{label}, s_{std::move(s)} {
         assert(s_);
     }
-    explicit labeled_statement(expression_ptr&& e, statement_ptr&& s) : val_{std::move(e)}, s_{std::move(s)} {
+    explicit labeled_statement(const source_position& pos, expression_ptr&& e, statement_ptr&& s) : statement{pos}, val_{std::move(e)}, s_{std::move(s)} {
         assert(s_ && std::get<2>(val_));
     }
 
@@ -328,7 +337,7 @@ private:
 
 class compound_statement : public statement {
 public:
-    explicit compound_statement(std::vector<statement_ptr>&& ss) : ss_{std::move(ss)} {
+    explicit compound_statement(const source_position& pos, std::vector<statement_ptr>&& ss) : statement{pos}, ss_{std::move(ss)} {
     }
 
     const std::vector<statement_ptr>& ss() const { return ss_; }
@@ -341,7 +350,7 @@ private:
 
 class expression_statement : public statement {
 public:
-    explicit expression_statement(expression_ptr&& e) : e_{std::move(e)} {
+    explicit expression_statement(const source_position& pos, expression_ptr&& e) : statement{pos}, e_{std::move(e)} {
         assert(e_);
     }
 
@@ -355,7 +364,7 @@ private:
 
 class if_statement : public statement {
 public:
-    explicit if_statement(expression_ptr&& cond, statement_ptr&& if_s, statement_ptr&& else_s) : cond_{std::move(cond)}, if_{std::move(if_s)}, else_{std::move(else_s)} {
+    explicit if_statement(const source_position& pos, expression_ptr&& cond, statement_ptr&& if_s, statement_ptr&& else_s) : statement{pos}, cond_{std::move(cond)}, if_{std::move(if_s)}, else_{std::move(else_s)} {
         assert(cond_ && if_);
     }
 
@@ -373,7 +382,7 @@ private:
 
 class switch_statement : public statement {
 public:
-    explicit switch_statement(expression_ptr&& e, statement_ptr&& s) : e_{std::move(e)}, s_{std::move(s)} {
+    explicit switch_statement(const source_position& pos, expression_ptr&& e, statement_ptr&& s) : statement{pos}, e_{std::move(e)}, s_{std::move(s)} {
         assert(e_ && s_);
     }
 
@@ -389,7 +398,7 @@ private:
 
 class while_statement : public statement {
 public:
-    explicit while_statement(expression_ptr&& cond, statement_ptr&& s) : cond_{std::move(cond)}, s_{std::move(s)} {
+    explicit while_statement(const source_position& pos, expression_ptr&& cond, statement_ptr&& s) : statement{pos}, cond_{std::move(cond)}, s_{std::move(s)} {
         assert(cond_ && s_);
     }
 
@@ -405,7 +414,7 @@ private:
 
 class do_statement : public statement {
 public:
-    explicit do_statement(expression_ptr&& cond, statement_ptr&& s) : cond_{std::move(cond)}, s_{std::move(s)} {
+    explicit do_statement(const source_position& pos, expression_ptr&& cond, statement_ptr&& s) : statement{pos}, cond_{std::move(cond)}, s_{std::move(s)} {
         assert(cond_ && s_);
     }
 
@@ -421,7 +430,7 @@ private:
 
 class for_statement : public statement {
 public:
-    explicit for_statement(statement_ptr&& init, expression_ptr&& cond, expression_ptr&& iter, statement_ptr&& body) : init_{std::move(init)}, cond_{std::move(cond)}, iter_{std::move(iter)}, body_{std::move(body)} {
+    explicit for_statement(const source_position& pos, statement_ptr&& init, expression_ptr&& cond, expression_ptr&& iter, statement_ptr&& body) : statement{pos}, init_{std::move(init)}, cond_{std::move(cond)}, iter_{std::move(iter)}, body_{std::move(body)} {
         assert(init_ && body_);
     }
 
@@ -441,7 +450,7 @@ private:
 
 class goto_statement : public statement {
 public:
-    explicit goto_statement(const std::string& target) : target_{target} {
+    explicit goto_statement(const source_position& pos, const std::string& target) : statement{pos}, target_{target} {
     }
 
     const std::string& target() const { return target_; }
@@ -454,7 +463,7 @@ private:
 
 class continue_statement : public statement {
 public:
-    explicit continue_statement() {}
+    explicit continue_statement(const source_position& pos) :statement{pos} {}
 
 private:
     void do_print(std::ostream& os) const override;
@@ -462,7 +471,7 @@ private:
 
 class break_statement : public statement {
 public:
-    explicit break_statement() {}
+    explicit break_statement(const source_position& pos) : statement{pos} {}
 
 private:
     void do_print(std::ostream& os) const override;
@@ -470,7 +479,7 @@ private:
 
 class return_statement : public statement {
 public:
-    explicit return_statement(expression_ptr&& e) : e_{std::move(e)} {
+    explicit return_statement(const source_position& pos, expression_ptr&& e) : statement{pos}, e_{std::move(e)} {
     }
 
     const expression_ptr& e() const { return e_; }
@@ -503,16 +512,18 @@ private:
 //
 class init_decl {
 public:
-    explicit init_decl(decl&& d) : d_{std::move(d)}, val_{} {
+    explicit init_decl(const source_position& pos, decl&& d) : pos_{pos}, d_{std::move(d)}, val_{} {
     }
 
-    explicit init_decl(decl&& d, expression_ptr&& init) : d_{std::move(d)}, val_{std::move(init)} {
+    explicit init_decl(const source_position& pos, decl&& d, expression_ptr&& init) : pos_{pos}, d_{std::move(d)}, val_{std::move(init)} {
         assert(d_.t()->base() != ctype::function_t && std::get<1>(val_));
     }
 
-    explicit init_decl(decl&& d, std::unique_ptr<compound_statement>&& body) : d_{std::move(d)}, val_{std::move(body)} {
+    explicit init_decl(const source_position& pos, decl&& d, std::unique_ptr<compound_statement>&& body) : pos_{pos}, d_{std::move(d)}, val_{std::move(body)} {
         assert(d_.t()->base() == ctype::function_t && std::get<2>(val_));
     }
+
+    const source_position& pos() const { return pos_; }
 
     const decl& d() const { return d_; }
 
@@ -539,6 +550,7 @@ public:
     }
 
 private:
+    source_position pos_;
     decl d_;
     std::variant<std::monostate, expression_ptr, std::unique_ptr<compound_statement>> val_;
 };

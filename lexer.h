@@ -13,8 +13,12 @@ public:
         next();
     }
 
-    auto position() const {
+    source_position position() const {
         return pp_.position();
+    }
+
+    std::vector<source_position> position_trace() const {
+        return pp_.position_trace();
     }
 
     const token& current() const {

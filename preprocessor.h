@@ -58,7 +58,8 @@ public:
     explicit preprocessor(source_manager& sm, const source_file& source);
     ~preprocessor();
 
-    std::vector<source_position> position() const;
+    source_position position() const;
+    std::vector<source_position> position_trace() const;
     const pp_token& current() const;
     void next();
 

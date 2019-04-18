@@ -393,11 +393,17 @@ public:
         assert(std::uncaught_exceptions() || files_.size() == 1);
     }
 
-    std::vector<source_position> position() const {
+    source_position position() const {
+        assert(!files_.empty());
+        return files_.back()->position();
+    }
+
+    std::vector<source_position> position_trace() const {
         std::vector<source_position> p;
         for (auto it = files_.crbegin(); it != files_.crend(); ++it) {
             p.push_back((*it)->position());
         }
+        assert(!p.empty());
         return p;
     }
 
@@ -1129,8 +1135,12 @@ preprocessor::preprocessor(source_manager& sm, const source_file& source) : impl
 
 preprocessor::~preprocessor() = default;
 
-std::vector<source_position> preprocessor::position() const {
+source_position preprocessor::position() const {
     return impl_->position();
+}
+
+std::vector<source_position> preprocessor::position_trace() const {
+    return impl_->position_trace();
 }
 
 const pp_token& preprocessor::current() const {
