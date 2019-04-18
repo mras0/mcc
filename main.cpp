@@ -308,15 +308,6 @@ namespace mcc {
 //  | Stack top       | [EBP-locals_size] = [ESP]  |      |
 //  +-----------------+----------------------------+      v
 
-bool is_comparison_op(token_type op) {
-    return op == token_type::lt
-        || op == token_type::lteq
-        || op == token_type::eqeq
-        || op == token_type::noteq
-        || op == token_type::gt
-        || op == token_type::gteq;
-}
-
 const char* compare_cond(token_type op, bool unsigned_) {
     switch (op) {
     case token_type::lt:    return unsigned_ ? "B" : "L";
@@ -327,53 +318,6 @@ const char* compare_cond(token_type op, bool unsigned_) {
     case token_type::gteq:  return unsigned_ ? "AE" : "GE";
     default: NOT_IMPLEMENTED(op);
     }
-}
-
-using type_ptr = std::shared_ptr<const type>;
-
-type_ptr make_ref(const type_ptr& t) {
-    return std::make_shared<type>(ctype::reference_t, t);
-}
-
-type_ptr make_ptr(const type_ptr& t) {
-    return std::make_shared<type>(ctype::pointer_t, t);
-}
-
-type_ptr remove_flags(const type_ptr& t, ctype flags) {
-    if (!(t->ct() & flags)) {
-        return t;
-    }
-    auto cpy = std::make_shared<type>(*t);
-    cpy->remove_flags(flags);
-    return cpy;
-}
-
-type_ptr remove_cvr(const type_ptr& t) {
-    return remove_flags(t, ctype::cvr_f);
-}
-
-type_ptr to_rvalue(const type_ptr& t) {
-    return remove_cvr(t->base() == ctype::reference_t ? t->reference_val() : t);
-}
-
-type_ptr decay1(const type_ptr& t) {
-    const auto base = t->base();
-    if (base == ctype::void_t || base == ctype::bool_t || is_arithmetic(base)) {
-        return t;
-    } else if (base == ctype::pointer_t) {
-        return t;
-    } else if (base == ctype::function_t) {
-        return make_ptr(t);
-    } else if (base == ctype::array_t) {
-        return make_ptr(t->array_val().t());
-    } else if (base == ctype::struct_t || base == ctype::union_t) {
-        return t;
-    }
-    NOT_IMPLEMENTED(*t);
-}
-
-type_ptr decay(const type_ptr& t) {
-    return decay1(to_rvalue(t));
 }
 
 bool types_equal(const type_ptr& l, const type_ptr& r) {
@@ -950,16 +894,272 @@ private:
 
 } // namespace mcc
 
+class empty_visitor {
+public:
+    explicit empty_visitor() {}
+
+    auto handle(const expression& e) {
+        return visit(*this, e);
+    }
+
+    auto handle(const statement& s) {
+        return visit(*this, s);
+    }
+
+    void handle(const init_decl& id) {
+        const auto& d = id.d();
+        if (id.has_init_val() && d.t()->base() == ctype::function_t) {
+            std::cout << "TODO: Handle " << d << "\n";
+            handle(id.body());
+        } else {
+            // TODO: Handle variables and extern definitions
+        }
+    }
+
+    //
+    // Expression
+    //
+    void operator()(const identifier_expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+    void operator()(const const_int_expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+    void operator()(const const_float_expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+    void operator()(const string_lit_expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+    void operator()(const initializer_expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+    void operator()(const array_access_expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+    void operator()(const function_call_expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+    void operator()(const access_expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+    void operator()(const sizeof_expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+    void operator()(const prefix_expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+    void operator()(const postfix_expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+    void operator()(const cast_expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+    void operator()(const binary_expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+    void operator()(const conditional_expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+
+    //
+    // Statement
+    //
+    void operator()(const empty_statement& s) {
+        NOT_IMPLEMENTED(s);
+    }
+    void operator()(const declaration_statement& s) {
+        NOT_IMPLEMENTED(s);
+    }
+    void operator()(const labeled_statement& s) {
+        NOT_IMPLEMENTED(s);
+    }
+    void operator()(const compound_statement& s) {
+        NOT_IMPLEMENTED(s);
+    }
+    void operator()(const expression_statement& s) {
+        NOT_IMPLEMENTED(s);
+    }
+    void operator()(const if_statement& s) {
+        NOT_IMPLEMENTED(s);
+    }
+    void operator()(const switch_statement& s) {
+        NOT_IMPLEMENTED(s);
+    }
+    void operator()(const while_statement& s) {
+        NOT_IMPLEMENTED(s);
+    }
+    void operator()(const do_statement& s) {
+        NOT_IMPLEMENTED(s);
+    }
+    void operator()(const for_statement& s) {
+        NOT_IMPLEMENTED(s);
+    }
+    void operator()(const goto_statement& s) {
+        NOT_IMPLEMENTED(s);
+    }
+    void operator()(const continue_statement& s) {
+        NOT_IMPLEMENTED(s);
+    }
+    void operator()(const break_statement& s) {
+        NOT_IMPLEMENTED(s);
+    }
+    void operator()(const return_statement& s) {
+        NOT_IMPLEMENTED(s);
+    }
+};
+
+
+class test_visitor {
+public:
+    explicit test_visitor() {}
+
+    auto handle(const expression& e) {
+        return visit(*this, e);
+    }
+
+    auto handle(const statement& s) {
+        return visit(*this, s);
+    }
+
+    void handle(const init_decl& id) {
+        const auto& d = id.d();
+        if (id.has_init_val() && d.t()->base() == ctype::function_t) {
+            std::cout << "TODO: Handle " << id.pos() << " " << d << "\n";
+            handle(id.body());
+        } else {
+            // TODO: Handle variables and extern definitions
+        }
+    }
+
+    //
+    // Expression
+    //
+    void operator()(const identifier_expression& e) {
+        (void)e;
+    }
+    void operator()(const const_int_expression& e) {
+        (void)e;
+    }
+    void operator()(const const_float_expression& e) {
+        (void)e;
+    }
+    void operator()(const string_lit_expression& e) {
+        (void)e;
+    }
+    void operator()(const initializer_expression& e) {
+        for (const auto& e2: e.es()) {
+            handle(*e2);
+        }
+    }
+    void operator()(const array_access_expression& e) {
+        handle(e.a());
+        handle(e.i());
+    }
+    void operator()(const function_call_expression& e) {
+        handle(e.f());
+        for (const auto& a: e.args()) {
+            handle(*a);
+        }
+    }
+    void operator()(const access_expression& e) {
+        handle(e.e());
+    }
+    void operator()(const sizeof_expression& e) {
+        if (!e.arg_is_type()) {
+            handle(e.e());
+        }
+    }
+    void operator()(const prefix_expression& e) {
+        handle(e.e());
+    }
+    void operator()(const postfix_expression& e) {
+        handle(e.e());
+    }
+    void operator()(const cast_expression& e) {
+        handle(e.e());
+    }
+    void operator()(const binary_expression& e) {
+        handle(e.l());
+        handle(e.r());
+    }
+    void operator()(const conditional_expression& e) {
+        handle(e.cond());
+        handle(e.l());
+        handle(e.r());
+    }
+
+    //
+    // Statement
+    //
+    void operator()(const empty_statement&) {
+    }
+    void operator()(const declaration_statement& s) {
+        for (const auto& ds: s.ds()) {
+            if (ds->has_init_val()) {
+                assert(ds->d().t()->base() != ctype::function_t);
+                handle(ds->init_expr());
+            }
+        }
+    }
+    void operator()(const labeled_statement& s) {
+        handle(s.s());
+    }
+    void operator()(const compound_statement& s) {
+        for (const auto& s2 : s.ss()) {
+            handle(*s2);
+        }
+    }
+    void operator()(const expression_statement& s) {
+        handle(s.e());
+    }
+    void operator()(const if_statement& s) {
+        handle(s.cond());
+        handle(s.if_s());
+        if (s.else_s()) {
+            handle(*s.else_s());
+        }
+    }
+    void operator()(const switch_statement& s) {
+        handle(s.e());
+        handle(s.s());
+    }
+    void operator()(const while_statement& s) {
+        handle(s.cond());
+        handle(s.s());
+    }
+    void operator()(const do_statement& s) {
+        handle(s.s());
+        handle(s.cond());
+    }
+    void operator()(const for_statement& s) {
+        handle(s.init());
+        if (s.cond()) handle(*s.cond());
+        if (s.iter()) handle(*s.iter());
+        handle(s.body());
+    }
+    void operator()(const goto_statement& s) {
+        (void)s;
+    }
+    void operator()(const continue_statement& s) {
+        (void)s;
+    }
+    void operator()(const break_statement& s) {
+        (void)s;
+    }
+    void operator()(const return_statement& s) {
+        if (s.e()) {
+            handle(*s.e());
+        }
+    }
+};
+
 void process_one(source_manager& sm, const std::string& filename) {
     std::cout << filename << "\n";
     auto decls = parse(sm, sm.load(filename));
-    //test_visitor vis{};
+    test_visitor vis{};
     for (const auto& d: decls) {
-        //vis.do_top_level_decl(*d);
-        std::cout << *d << " // " << d->pos() << "\n";
-        //if (d->has_init_val() && d->d().t()->base() == ctype::function_t) {
-        //    std::cout << d->body() << "\n";
-        //}
+        vis.handle(*d);
     }
 }
 

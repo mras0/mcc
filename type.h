@@ -68,11 +68,11 @@ constexpr ctype modified_base_type(ctype t, ctype new_base) {
 }
 
 constexpr bool is_integral(ctype t) {
-    return base_type(t) >= ctype::plain_char_t && base_type(t) <= ctype::long_long_t;
+    return base_type(t) >= ctype::bool_t && base_type(t) <= ctype::long_long_t;
 }
 
 constexpr bool is_arithmetic(ctype t) {
-    return base_type(t) >= ctype::plain_char_t && base_type(t) <= ctype::long_double_t;
+    return base_type(t) >= ctype::bool_t && base_type(t) <= ctype::long_double_t;
 }
 
 constexpr ctype modified_bitfield(ctype t, uint8_t val) {
@@ -87,15 +87,13 @@ constexpr uint8_t bitfield_value(ctype t) {
 
 void output_flags(std::ostream& os, ctype t);
 
-ctype integral_promotion(ctype t);
-ctype common_type(ctype l, ctype r);
-
 class array_info;
 class struct_info;
 class union_info;
 class enum_info;
 class function_info;
 class type;
+using type_ptr = std::shared_ptr<const type>;
 
 class type {
 public:
@@ -106,7 +104,7 @@ public:
         assert(base_type(t_) < ctype::pointer_t);
     }
 
-    explicit type(ctype t, const std::shared_ptr<const type>& pointee) : t_{t}, val_{pointee} {
+    explicit type(ctype t, const type_ptr& pointee) : t_{t}, val_{pointee} {
         assert(base_type(t_) == ctype::pointer_t || base_type(t_) == ctype::reference_t);
     }
 
@@ -149,14 +147,14 @@ public:
         t_ &= ~flags;
     }
 
-    void modify_inner(const std::shared_ptr<const type>& t);
+    void modify_inner(const type_ptr& t);
 
-    const std::shared_ptr<const type>& pointer_val() const {
+    const type_ptr& pointer_val() const {
         assert(base_type(t_) == ctype::pointer_t);
         return std::get<1>(val_);
     }
 
-    const std::shared_ptr<const type>& reference_val() const {
+    const type_ptr& reference_val() const {
         assert(base_type(t_) == ctype::reference_t);
         return std::get<1>(val_);
     }
@@ -189,7 +187,7 @@ public:
 private:
     ctype t_;
     std::variant<std::monostate,
-                 std::shared_ptr<const type>,
+                 type_ptr,
                  std::shared_ptr<const array_info>,
                  std::shared_ptr<const struct_info>,
                  std::shared_ptr<const union_info>,
@@ -204,13 +202,13 @@ void output_decl(std::ostream& os, const std::string& id, const type& t);
 
 class decl {
 public:
-    explicit decl(const std::shared_ptr<const type>& t, const std::string& id) : type_{t}, id_{id} {}
+    explicit decl(const type_ptr& t, const std::string& id) : type_{t}, id_{id} {}
 
-    const std::shared_ptr<const type>& t() const { return type_; }
+    const type_ptr& t() const { return type_; }
     const std::string& id() const { return id_; }
 
 private:
-    std::shared_ptr<const type> type_;
+    type_ptr type_;
     std::string id_;
 };
 
@@ -219,13 +217,13 @@ std::ostream& operator<<(std::ostream& os, const decl& d);
 class array_info {
 public:
     static constexpr uint64_t unbounded = UINT64_MAX;
-    explicit array_info(const std::shared_ptr<const type>& t, uint64_t bound) : t_{t}, bound_{bound} {}
+    explicit array_info(const type_ptr& t, uint64_t bound) : t_{t}, bound_{bound} {}
 
-    const std::shared_ptr<const type>& t() const { return t_;}
+    const type_ptr& t() const { return t_;}
     uint64_t bound() const { return bound_; }
 
 private:
-    std::shared_ptr<const type> t_;
+    type_ptr t_;
     uint64_t bound_;
 };
 
@@ -291,15 +289,15 @@ private:
 
 class function_info {
 public:
-    explicit function_info(const std::shared_ptr<const type>& ret_type, const std::vector<decl>& params, bool variadic) : ret_type_{ret_type}, params_{params}, variadic_{variadic} {
+    explicit function_info(const type_ptr& ret_type, const std::vector<decl>& params, bool variadic) : ret_type_{ret_type}, params_{params}, variadic_{variadic} {
     }
 
-    const std::shared_ptr<const type>& ret_type() const { return ret_type_; }
+    const type_ptr& ret_type() const { return ret_type_; }
     const std::vector<decl>& params() const { return params_; }
     bool variadic() const { return variadic_; }
 
 private:
-    std::shared_ptr<const type> ret_type_;
+    type_ptr ret_type_;
     std::vector<decl> params_;
     bool variadic_;
 };
@@ -311,6 +309,18 @@ inline const auto& struct_union_members(const type& t) {
     assert(t.base() == ctype::struct_t || t.base() == ctype::union_t);
     return t.base() == ctype::struct_t ? t.struct_val().members() : t.union_val().members();
 }
+
+type_ptr make_ptr_t(const type_ptr& t, ctype flags = ctype::none);
+type_ptr make_ref_t(const type_ptr& t);
+type_ptr make_array_t(const type_ptr& element, uint64_t bound, ctype flags = ctype::none);
+ctype common_type(ctype l, ctype r);
+type_ptr common_type(const type_ptr& lhs, const type_ptr& rhs);
+type_ptr remove_cvr(const type_ptr& t);
+type_ptr to_rvalue(const type_ptr& t);
+type_ptr decay(const type_ptr& t);
+bool is_convertible(const type_ptr& l, const type_ptr& r);
+bool is_compatible_pointer_type(const type_ptr& l, const type_ptr& r, bool ignore_cvr = false);
+bool redecl_type_compare(const type& l, const type& r);
 
 } // namespace mcc
 

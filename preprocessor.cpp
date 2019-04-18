@@ -1406,13 +1406,21 @@ extern int chmod(const char *, mode_t);
     sm.define_standard_headers("sys/time.h", R"(
 #ifndef _SYS_TIME_H
 #define _SYS_TIME_H
+#include <sys/types.h>
+struct timeval {
+    time_t      tv_sec;
+    suseconds_t tv_usec;
+};
+
 extern int gettimeofday(struct timeval *restrict tp, void *restrict tzp);
 #endif
 )");
     sm.define_standard_headers("sys/types.h", R"(
 #ifndef _SYS_TYPES_H
 #define _SYS_TYPES_H
+#include <time.h>
 typedef long long off_t;
+typedef long long suseconds_t;
 #endif
 )");
 }

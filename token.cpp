@@ -123,6 +123,14 @@ token_type without_assignment(token_type t) {
     }
 }
 
+bool is_comparison_op(token_type op) {
+    return op == token_type::lt
+        || op == token_type::lteq
+        || op == token_type::eqeq
+        || op == token_type::noteq
+        || op == token_type::gt
+        || op == token_type::gteq;
+}
 
 std::ostream& operator<<(std::ostream& os, const_int_val civ) {
     os << civ.val;

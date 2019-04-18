@@ -117,6 +117,7 @@ token_type op_token_from(const std::string_view s);
 int operator_precedence(token_type t);
 bool is_assignment_op(token_type t);
 token_type without_assignment(token_type t);
+bool is_comparison_op(token_type op);
 
 struct const_int_val {
     uint64_t val;

@@ -13,7 +13,6 @@ class expression;
 class statement;
 using expression_ptr = std::unique_ptr<expression>;
 using statement_ptr = std::unique_ptr<statement>;
-using type_ptr = std::shared_ptr<const type>;
 
 //
 // Expression
@@ -23,17 +22,27 @@ class expression {
 public:
     virtual ~expression() {}
 
+    const source_position& pos() const { return pos_; }
+    const type_ptr& et() const { return et_; }
+
     friend std::ostream& operator<<(std::ostream& os, const expression& e) {
         e.do_print(os);
         return os;
     }
+protected:
+    explicit expression(const source_position& pos, const type_ptr& et) : pos_{pos}, et_{et} {
+        assert(et_);
+    }
 private:
+    const source_position pos_;
+    const type_ptr et_;
+
     virtual void do_print(std::ostream& os) const = 0;
 };
 
 class identifier_expression : public expression {
 public:
-    explicit identifier_expression(const std::string& id) : id_{id} {
+    explicit identifier_expression(const source_position& pos, const type_ptr& et, const std::string& id) : expression{pos, et}, id_{id} {
         assert(!id_.empty());
     }
 
@@ -49,7 +58,7 @@ private:
 
 class const_int_expression : public expression {
 public:
-    explicit const_int_expression(const const_int_val& val) : val_{val} {
+    explicit const_int_expression(const source_position& pos, const type_ptr& et, const const_int_val& val) : expression{pos, et}, val_{val} {
     }
 
     const const_int_val& val() const { return val_; }
@@ -64,7 +73,7 @@ private:
 
 class const_float_expression : public expression {
 public:
-    explicit const_float_expression(double val, ctype t) : val_{val}, t_{t} {
+    explicit const_float_expression(const source_position& pos, const type_ptr& et, double val, ctype t) : expression{pos, et}, val_{val}, t_{t} {
         assert(t == ctype::float_t || t == ctype::double_t || t == ctype::long_double_t);
     }
 
@@ -82,7 +91,7 @@ private:
 
 class string_lit_expression : public expression {
 public:
-    explicit string_lit_expression(const std::string& text) : text_(text) {
+    explicit string_lit_expression(const source_position& pos, const type_ptr& et, const std::string& text) : expression{pos, et}, text_(text) {
     }
 
     const std::string& text() const { return text_; }
@@ -94,7 +103,7 @@ private:
 
 class initializer_expression : public expression {
 public:
-    explicit initializer_expression(std::vector<expression_ptr>&& es) : es_{std::move(es)} {
+    explicit initializer_expression(const source_position& pos, const type_ptr& et, std::vector<expression_ptr>&& es) : expression{pos, et}, es_{std::move(es)} {
     }
     const std::vector<expression_ptr>& es() const { return es_; }
 private:
@@ -104,7 +113,7 @@ private:
 
 class array_access_expression : public expression {
 public:
-    explicit array_access_expression(expression_ptr&& a, expression_ptr&& i) : a_{std::move(a)}, i_{std::move(i)} {
+    explicit array_access_expression(const source_position& pos, const type_ptr& et, expression_ptr&& a, expression_ptr&& i) : expression{pos, et}, a_{std::move(a)}, i_{std::move(i)} {
         assert(a_ && i_);
     }
     const expression& i() const { return *i_; }
@@ -117,7 +126,7 @@ private:
 
 class function_call_expression : public expression {
 public:
-    explicit function_call_expression(expression_ptr&& f, std::vector<expression_ptr>&& args) : f_{std::move(f)}, args_{std::move(args)} {
+    explicit function_call_expression(const source_position& pos, const type_ptr& et, expression_ptr&& f, std::vector<expression_ptr>&& args) : expression{pos, et}, f_{std::move(f)}, args_{std::move(args)} {
         assert(f_ && std::none_of(args.begin(), args.end(), [](auto& a) {return !a; }));
     }
     const expression& f() const { return *f_; }
@@ -131,7 +140,7 @@ private:
 
 class access_expression : public expression {
 public:
-    explicit access_expression(token_type op, expression_ptr&& e, const std::string& id) : op_{op}, e_{std::move(e)}, id_{id} {
+    explicit access_expression(const source_position& pos, const type_ptr& et, token_type op, expression_ptr&& e, const std::string& id) : expression{pos, et}, op_{op}, e_{std::move(e)}, id_{id} {
         assert(op_ == token_type::dot || op_ == token_type::arrow);
         assert(e_ && !id_.empty());
     }
@@ -150,11 +159,11 @@ private:
 
 class sizeof_expression : public expression {
 public:
-    explicit sizeof_expression(const type_ptr& t) : val_{t} {
+    explicit sizeof_expression(const source_position& pos, const type_ptr& et, const type_ptr& t) : expression{pos, et}, val_{t} {
         assert(std::get<0>(val_));
     }
  
-    explicit sizeof_expression(expression_ptr&& e) : val_{std::move(e)} {
+    explicit sizeof_expression(const source_position& pos, const type_ptr& et, expression_ptr&& e) : expression{pos, et}, val_{std::move(e)} {
         assert(std::get<1>(val_));
     }
 
@@ -174,7 +183,7 @@ public:
     const expression& e() const { return *e_; }
 
 protected:
-    explicit unary_expression(bool is_prefix, token_type op, expression_ptr&& e) : is_prefix_{is_prefix}, op_{op}, e_{std::move(e)} {
+    explicit unary_expression(const source_position& pos, const type_ptr& et, bool is_prefix, token_type op, expression_ptr&& e) : expression{pos, et}, is_prefix_{is_prefix}, op_{op}, e_{std::move(e)} {
         assert(e_ && op != token_type::sizeof_);
     }
 
@@ -188,32 +197,30 @@ private:
 
 class prefix_expression : public unary_expression {
 public:
-    explicit prefix_expression(token_type op, expression_ptr&& e) : unary_expression{true, op, std::move(e)} {
+    explicit prefix_expression(const source_position& pos, const type_ptr& et, token_type op, expression_ptr&& e) : unary_expression{pos, et, true, op, std::move(e)} {
     }
 };
 
 class postfix_expression : public unary_expression {
 public:
-    explicit postfix_expression(token_type op, expression_ptr&& e) : unary_expression{false, op, std::move(e)} {
+    explicit postfix_expression(const source_position& pos, const type_ptr& et, token_type op, expression_ptr&& e) : unary_expression{pos, et, false, op, std::move(e)} {
     }
 };
 
 class cast_expression : public expression {
 public:
-    explicit cast_expression(const type_ptr& t, expression_ptr&& e) : t_{std::move(t)}, e_{std::move(e)} {
-        assert(t_ && e_);
+    explicit cast_expression(const source_position& pos, const type_ptr& et, expression_ptr&& e) : expression{pos, et}, e_{std::move(e)} {
+        assert(this->et() && e_);
     }
-    const type_ptr& t() const { return t_; }
     const expression& e() const { return *e_; }
 private:
-    type_ptr t_;
     expression_ptr e_;
     void do_print(std::ostream& os) const override;
 };
 
 class binary_expression : public expression {
 public:
-    explicit binary_expression(token_type op, expression_ptr&& l, expression_ptr&& r) : op_{op}, l_{std::move(l)}, r_{std::move(r)} {
+    explicit binary_expression(const source_position& pos, const type_ptr& et, token_type op, expression_ptr&& l, expression_ptr&& r) : expression{pos, et}, op_{op}, l_{std::move(l)}, r_{std::move(r)} {
         assert(l_ && r_);
     }
 
@@ -231,7 +238,7 @@ private:
 
 class conditional_expression : public expression {
 public:
-    explicit conditional_expression(expression_ptr&& cond, expression_ptr&& l, expression_ptr&& r) : cond_{std::move(cond)}, l_{std::move(l)}, r_{std::move(r)} {
+    explicit conditional_expression(const source_position& pos, const type_ptr& et, expression_ptr&& cond, expression_ptr&& l, expression_ptr&& r) : expression{pos, et}, cond_{std::move(cond)}, l_{std::move(l)}, r_{std::move(r)} {
         assert(l_ && r_);
     }
 
@@ -320,7 +327,7 @@ public:
         assert(s_ && std::get<2>(val_));
     }
 
-    const statement& s() { return *s_; }
+    const statement& s() const { return *s_; }
 
     bool is_default_label() const { return val_.index() == 0; }
     bool is_case_label()    const { return val_.index() == 2; }
