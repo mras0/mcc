@@ -344,10 +344,11 @@ private:
 
 class scope {
 public:
-    explicit scope(bool is_function_scope) : is_function_scope_{is_function_scope} {
+    explicit scope(function_info* func_info) : func_info_{func_info} {
     }
 
-    bool is_function_scope() const { return is_function_scope_; }
+    bool is_function_scope() const { return !!func_info_; }
+    function_info& func_info() { assert(func_info_); return *func_info_; }
 
     symbol* find(const std::string_view id) {
         assert(!id.empty());
@@ -383,14 +384,14 @@ public:
     }
 
     void check_labels() {
-        assert(is_function_scope_);
+        assert(is_function_scope());
         for (const auto& sp: symbols_) {
             sp->check_label();
         }
     }
 
 private:
-    const bool is_function_scope_;
+    function_info* const func_info_;
     std::vector<std::unique_ptr<symbol>> symbols_;
 };
 
@@ -442,8 +443,8 @@ private:
 
     class push_scope {
     public:
-        explicit push_scope(parser& p, bool is_function_scope = false) : p_{p} {
-            p_.active_scopes_.push_back(std::make_unique<scope>(is_function_scope));
+        explicit push_scope(parser& p, function_info* func_info = nullptr) : p_{p} {
+            p_.active_scopes_.push_back(std::make_unique<scope>(func_info));
         }
         ~push_scope() {
             p_.active_scopes_.pop_back();
@@ -488,6 +489,16 @@ private:
             }
         }
         NOT_IMPLEMENTED(id);
+    }
+
+    function_info& current_function_info() {
+        assert(!active_scopes_.empty());
+        for (auto it = active_scopes_.rbegin(), end = active_scopes_.rend(); it != end; ++it) {
+            if ((*it)->is_function_scope()) {
+                return (*it)->func_info();
+            }
+        }
+        NOT_IMPLEMENTED("Not inside function");
     }
 
     // Handle null pointer constant
@@ -582,7 +593,7 @@ private:
                         NOT_IMPLEMENTED("Function definition in struct/union");
                     }
                     {
-                        push_scope ps{*this, true}; // Function scope
+                        push_scope ps{*this, const_cast<function_info*>(&d.t()->function_val())}; // Function scope
                         for (const auto& a: d.t()->function_val().params()) {
                             current_scope().declare(a);
                         }
@@ -1270,8 +1281,7 @@ private:
         if (t == token_type::sizeof_) {
             next();
             auto se = parse_sizeof_expression(expression_start);
-            std::cout << "TODO: const_int_eval(" << *se << ")\n";
-            return se;
+            return std::make_unique<const_int_expression>(se->pos(), size_t_type, const_int_eval(*se));
         }
         return parse_postfix_expression();
     }
@@ -1534,14 +1544,23 @@ private:
             EXPECT(semicolon);
             return std::make_unique<break_statement>(statement_pos);
         case token_type::return_:
-            next();
-            if (current().type() == token_type::semicolon) {
+            {
                 next();
-                return std::make_unique<return_statement>(statement_pos, nullptr);
-            } else {
-                auto e = parse_expression();
-                EXPECT(semicolon);
-                return std::make_unique<return_statement>(statement_pos, std::move(e));
+                auto rtype = current_function_info().ret_type();
+                if (current().type() == token_type::semicolon) {
+                    next();
+                    if (rtype->base() != ctype::void_t) {
+                        NOT_IMPLEMENTED("Expected return type " << *rtype);
+                    }
+                    return std::make_unique<return_statement>(statement_pos, nullptr);
+                } else {
+                    auto e = parse_expression();
+                    EXPECT(semicolon);
+                    if (!is_convertible(rtype, decay(e->et()))) {
+                        NOT_IMPLEMENTED("Invalid return type " << *e->et() << " expecting " << *rtype);
+                    }
+                    return std::make_unique<return_statement>(statement_pos, std::move(e));
+                }
             }
         case token_type::case_:
             {
@@ -1596,7 +1615,6 @@ private:
 
     const_int_val const_int_lookup(const std::string& id);
     const_int_val const_int_eval(const expression& e);
-    std::shared_ptr<const type> expression_type(const expression& e);
     size_t alignof_type(const type& t);
     size_t sizeof_type(const type& t);
 };
@@ -1671,7 +1689,7 @@ const_int_val parser::const_int_eval(const expression& e) {
         if (se->arg_is_type()) {
             size = sizeof_type(*se->t());
         } else {
-            size = sizeof_type(*expression_type(se->e()));
+            size = sizeof_type(*to_rvalue(se->e().et()));
         }
         return const_int_val{size, ctype::long_long_t | ctype::unsigned_f};
     } else if (auto ce = dynamic_cast<const conditional_expression*>(&e)) {
@@ -1682,33 +1700,6 @@ const_int_val parser::const_int_eval(const expression& e) {
         }
     }
 
-    NOT_IMPLEMENTED(e);
-}
-
-std::shared_ptr<const type> parser::expression_type(const expression& e) {
-    if (auto ae = dynamic_cast<const access_expression*>(&e)) {
-        auto t = expression_type(ae->e());
-        if (ae->op() == token_type::arrow) {
-            if (t->base() != ctype::pointer_t) {
-                NOT_IMPLEMENTED(e << " t: " << *t << " id: " << ae->id());
-            }
-            t = t->pointer_val();
-        }
-        if (t->base() == ctype::struct_t || t->base() == ctype::union_t) {
-            for (const auto& m: struct_union_members(*t)) {
-                if (m.id() == ae->id()) {
-                    return m.t();
-                }
-            }
-        }
-        NOT_IMPLEMENTED(e << " t: " << *t << " id: " << ae->id());
-    } else if (auto ie = dynamic_cast<const identifier_expression*>(&e)) {
-        auto sym = id_lookup(ie->id());
-        if (!sym || !sym->decl_type()) {
-            NOT_IMPLEMENTED(e);
-        }
-        return sym->decl_type();
-    }
     NOT_IMPLEMENTED(e);
 }
 
@@ -1724,6 +1715,8 @@ size_t parser::alignof_type(const type& t) {
         return align;
     } else if (base == ctype::array_t) {
         return alignof_type(*t.array_val().t());
+    } else if (base == ctype::enum_t) {
+        return sizeof_type(*int_type);
     }
 
     NOT_IMPLEMENTED(t);
@@ -1775,7 +1768,7 @@ size_t parser::sizeof_type(const type& t) {
             }
             return size;
         }
-    case ctype::enum_t:         NOT_IMPLEMENTED(t);
+    case ctype::enum_t:         return sizeof_type(*int_type);
     case ctype::function_t:     NOT_IMPLEMENTED(t);
     default:
         NOT_IMPLEMENTED(t);
