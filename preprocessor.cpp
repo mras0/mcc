@@ -1280,6 +1280,8 @@ extern FILE*    fdopen(int, const char *);
 #define EXIT_SUCCESS 0x00
 #define EXIT_FAILURE 0xff
 
+#define RAND_MAX 32767
+
 extern double               atof(const char *);
 extern int                  atoi(const char *);
 extern long                 atol(const char *);
@@ -1289,6 +1291,7 @@ extern void*                calloc(size_t, size_t);
 extern void*                realloc(void*, size_t);
 extern void                 free(void *);
 extern void                 exit(int);
+extern int                  rand(void);
 
 
 extern long                 strtol(const char*, char**, int);

@@ -449,5 +449,61 @@ bool redecl_type_compare(const type& l, const type& r) {
     NOT_IMPLEMENTED(l << " <> " << r);
 }
 
+size_t sizeof_type(ctype ct) {
+    constexpr size_t pointer_size = 8;
+    switch (ct) {
+    case ctype::plain_char_t:   return 1;
+    case ctype::char_t:         return 1;
+    case ctype::short_t:        return 2;
+    case ctype::int_t:          return 4;
+    case ctype::long_t:         return 4;
+    case ctype::long_long_t:    return 8;
+    case ctype::float_t:        return 4;
+    case ctype::double_t:       return 8;
+    case ctype::long_double_t:  return 8;
+    case ctype::pointer_t:      return pointer_size;
+    case ctype::enum_t:         return sizeof_type(ctype::int_t);
+    }
+    NOT_IMPLEMENTED(ct);
+}
+
+size_t sizeof_type(const type& t) {
+    const auto base = t.base();
+    if (is_arithmetic(base) || base == ctype::pointer_t || base == ctype::enum_t) {
+        return sizeof_type(base);
+    } else if (base == ctype::struct_t) {
+        if (!t.struct_val().size()) NOT_IMPLEMENTED("Use of incomplete type " << t);
+        return t.struct_val().size();
+    } else if (base == ctype::union_t) {
+        if (!t.union_val().size()) NOT_IMPLEMENTED("Use of incomplete type " << t);
+        return t.union_val().size();
+    } else if (base == ctype::array_t) {
+        if (const auto& ai = t.array_val(); ai.bound() == array_info::unbounded) {
+            return sizeof_type(ctype::pointer_t);
+        } else {
+            if (ai.bound() == 0) {
+                NOT_IMPLEMENTED(t);
+            }
+            return ai.bound() * sizeof_type(*ai.t());
+        }
+    }
+    NOT_IMPLEMENTED(t);
+}
+
+size_t alignof_type(const type& t) {
+    const auto base = t.base();
+    if (is_arithmetic(base) || base == ctype::pointer_t || base == ctype::enum_t) {
+        return sizeof_type(t);
+    } else if (base == ctype::struct_t) {
+        if (!t.struct_val().size()) NOT_IMPLEMENTED("Use of incomplete type " << t);
+        return t.struct_val().align();
+    } else if (base == ctype::union_t) {
+        if (!t.union_val().size()) NOT_IMPLEMENTED("Use of incomplete type " << t);
+        return t.union_val().align();
+    } else if (base == ctype::array_t) {
+        return alignof_type(*t.array_val().t());
+    }
+    NOT_IMPLEMENTED(t);
+}
 
 } // namespace mcc

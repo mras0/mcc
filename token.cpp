@@ -133,14 +133,17 @@ bool is_comparison_op(token_type op) {
 }
 
 std::ostream& operator<<(std::ostream& os, const_int_val civ) {
-    os << civ.val;
-    if (!!(civ.type & ctype::unsigned_f)) {
-        os << 'U';
-    }
-    if (base_type(civ.type) == ctype::long_t) {
-        os << 'L';
-    } else if (base_type(civ.type) == ctype::long_long_t) {
-        os << "LL";
+    switch (static_cast<uint32_t>(civ.type)) {
+#define CT(ct, rt) case static_cast<uint32_t>(ctype::ct): os << static_cast<signed rt>(static_cast<int64_t>(civ.val)); break; \
+                   case static_cast<uint32_t>(ctype::ct|ctype::unsigned_f): os << static_cast<unsigned rt>(civ.val); break
+        CT(char_t, char);
+        CT(short_t, short);
+        CT(int_t, int);
+        CT(long_t, long);
+        CT(long_long_t, long long);
+#undef CT
+    default:
+        NOT_IMPLEMENTED(civ.type);
     }
     return os;
 }

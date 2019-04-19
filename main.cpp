@@ -1028,10 +1028,25 @@ public:
         }
         const auto& d = id.d();
         if (d.t()->base() == ctype::function_t) {
-           // std::cout << "TODO: Handle " << id.pos() << " " << d << "\n";
+            std::cout << "TODO: Handle " << d << "\n";
+            const auto& fi = d.t()->function_val();
+            std::cout << fi << "\n";
+            const auto& sc = id.local_scope();
+            foo(sc);
             handle(id.body());
         } else {
-            std::cout << d << "\n";
+            std::cout << "TODO: Handle " << d << "\n";
+        }
+    }
+
+    static void foo(const scope& sc) {
+        for (const auto& s: scope_symbols(sc)) {
+            if (!s->decl_type()) continue;
+            std::cout << indent{} << decl{s->decl_type(), s->id()} << "\n";
+        }
+        source_formatter sf{std::cout, default_indent};
+        for (const auto& c: scope_children(sc)) {
+            foo(*c);
         }
     }
 
@@ -1159,9 +1174,9 @@ public:
 
 void process_one(source_manager& sm, const std::string& filename) {
     std::cout << filename << "\n";
-    auto decls = parse(sm, sm.load(filename));
+    auto pr = parse(sm, sm.load(filename));
     test_visitor vis{};
-    for (const auto& d: decls) {
+    for (const auto& d: pr.decls()) {
         vis.handle(*d);
     }
 }

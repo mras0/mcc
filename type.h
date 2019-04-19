@@ -339,6 +339,10 @@ bool is_convertible(const type_ptr& l, const type_ptr& r);
 bool is_compatible_pointer_type(const type_ptr& l, const type_ptr& r, bool ignore_cvr = false);
 bool redecl_type_compare(const type& l, const type& r);
 
+size_t sizeof_type(ctype ct);
+size_t sizeof_type(const type& t);
+size_t alignof_type(const type& t);
+
 } // namespace mcc
 
 #endif

@@ -199,7 +199,7 @@ void for_statement::do_print(std::ostream& os) const {
 }
 
 void goto_statement::do_print(std::ostream& os) const {
-    os << indent{} << "goto " << target_ << ";";
+    os << indent{} << "goto " << target_.id() << ";";
 }
 
 void continue_statement::do_print(std::ostream& os) const {
@@ -218,11 +218,93 @@ void return_statement::do_print(std::ostream& os) const {
     os << ";";
 }
 
+struct const_int_evaluator {
+    
+    const_int_val operator()(const const_int_expression& e) {
+        return e.val();
+    }
+
+    const_int_val operator()(const prefix_expression& e) {
+        auto val = visit(*this, e.e());
+        switch (e.op()) {
+        case token_type::plus:
+            break;
+        case token_type::minus:
+            val.val ^= UINT64_MAX;
+            ++val.val;
+            break;
+        case token_type::bnot:
+            val.val ^= UINT64_MAX;
+            break;
+        case token_type::not_:
+            val.val = val.val ? 0 : 1;
+            break;
+        default:
+            NOT_IMPLEMENTED(e.op() << " " << val);
+        }
+        return val;
+    }
+
+    const_int_val operator()(const binary_expression& e) {
+        auto l = visit(*this, e.l());
+        auto r = visit(*this, e.r());
+        const auto t = common_type(l.type, r.type);
+        l = cast(l, t);
+        r = cast(r, t);
+        switch (e.op()) {
+#define DO(op) return const_int_val{!(t & ctype::unsigned_f) ? static_cast<uint64_t>(static_cast<int64_t>(l.val) op static_cast<int64_t>(r.val)): l.val op r.val, t}
+#define DO_DIV(op) if (!r.val) NOT_IMPLEMENTED("Division by zero"); DO(op)
+        case token_type::plus:   DO(+);
+        case token_type::minus:  DO(-);
+        case token_type::star:   DO(*);
+        case token_type::div:    DO_DIV(/);
+        case token_type::mod:    DO_DIV(%);
+        case token_type::lt:     DO(< );
+        case token_type::lteq:   DO(<=);
+        case token_type::gteq:   DO(>=);
+        case token_type::gt:     DO(> );
+        case token_type::eqeq:   DO(==);
+        case token_type::noteq:  DO(!=);
+        case token_type::lshift: DO(<<);
+        case token_type::rshift: DO(>>);
+        case token_type::and_:   DO(&);
+        case token_type::xor_:   DO(^);
+        case token_type::or_:    DO(|);
+#undef DO
+        default:
+            NOT_IMPLEMENTED(l << " " << e.op() << " " << r);
+        }
+    }
+
+    const_int_val operator()(const sizeof_expression& e) {
+        uint64_t size;
+        if (e.arg_is_type()) {
+            size = sizeof_type(*e.t());
+        } else {
+            size = sizeof_type(*to_rvalue(e.e().et()));
+        }
+        return const_int_val{size, ctype::long_long_t | ctype::unsigned_f};
+    }
+
+    const_int_val operator()(const conditional_expression& e) {
+        if (visit(*this, e.cond()).val) {
+            return visit(*this, e.l());
+        } else {
+            return visit(*this, e.r());
+        }
+    }
+
+    const_int_val operator()(const expression& e) {
+        NOT_IMPLEMENTED(e);
+    }
+};
+
+const_int_val const_int_eval(const expression& e) {
+    return visit(const_int_evaluator{}, e);
+}
 
 #define EXPECT(tok) do { if (current().type() != token_type::tok) NOT_IMPLEMENTED("Expected " << token_type::tok << " got " << current()); next(); } while (0)
 #define TRACE(msg) std::cout << __FILE__ << ":" << __LINE__ << ": " << __func__ <<  " Current: " << current() << " " << msg << "\n"
-
-using tag_info_ptr = std::shared_ptr<tag_info_type>;
 
 const struct_union_member* search_decl(const type_ptr& t, const std::string_view id) {
     for (const auto& m: struct_union_members(*t)) {
@@ -244,103 +326,73 @@ const struct_union_member& find_struct_union_member(const type_ptr& t, const std
     NOT_IMPLEMENTED(id << " not found in " << *t);
 }
 
-// Label names have function scope
-// Tag names can be scope but are otherwise global (no shadowing allowed)
-// Orignary names can shadow (but are still disallowed in the same scope)
-class symbol {
-public:
-    explicit symbol(const std::string_view id)
-        : id_{id}
-        , declaration_{nullptr}
-        , tag_info_{nullptr}
-        , definition_{nullptr}
-        , civ_{0, ctype::none}
-        , label_state_{0} {
+void symbol::declare(const type_ptr& t) {
+    assert(t);
+    if (declaration_) {
+        if (!redecl_type_compare(*declaration_, *t)) {
+            NOT_IMPLEMENTED(id_ << " already declared as " << *declaration_ << " invalid redeclaration as " << *t);
+        }
+        return;
     }
+    declaration_ = t;
+}
 
-    const std::string& id() const { return id_; }
-    type_ptr decl_type() const { return declaration_; }
-    const tag_info_ptr& tag_info() const { return tag_info_; }
-
-    bool has_const_int_def() const { return civ_.type != ctype::none; }
-    const const_int_val& const_int_def() { assert(has_const_int_def()); return civ_; }
-
-    void declare(const type_ptr& t) {
-        assert(t);
-        if (declaration_) {
-            if (!redecl_type_compare(*declaration_, *t)) {
-                NOT_IMPLEMENTED(id_ << " already declared as " << *declaration_ << " invalid redeclaration as " << *t);
-            }
-            return;
-        }
-        declaration_ = t;
+void symbol::define(init_decl& id) {
+    assert(id.d().id() == id_);
+    declare(id.d().t());
+    if (!id.has_init_val()) {
+        return;
     }
-
-    void define(init_decl& id) {
-        assert(id.d().id() == id_);
-        declare(id.d().t());
-        if (!id.has_init_val()) {
-            return;
-        }
-        if (definition_) {
-            NOT_IMPLEMENTED(id_ << " already defined as " << *definition_ << " invalid redefinition as " << id);
-        }
-        if (civ_.type != ctype::none) {
-            NOT_IMPLEMENTED(id_ << " already defined as " << civ_ << " invalid redefinition as " << id);
-        }
-        definition_ = &id;
+    if (definition_) {
+        NOT_IMPLEMENTED(id_ << " already defined as " << *definition_ << " invalid redefinition as " << id);
     }
-
-    void define(const const_int_val& civ) {
-        if (!declaration_ || civ.type != declaration_->ct()) {
-            NOT_IMPLEMENTED("Invalid definition of " << id() << " as " << civ);
-        }
-        if (definition_) {
-            NOT_IMPLEMENTED(id_ << " already defined as " << *definition_ << " invalid redefinition as " << civ);
-        }
-        if (civ_.type != ctype::none) {
-            NOT_IMPLEMENTED(id_ << " already defined as " << civ_ << " invalid redefinition as " << civ);
-        }
-        if (!declaration_) {
-            declaration_ = std::make_shared<type>(civ.type);
-        }
-        civ_ = civ;
+    if (civ_.type != ctype::none) {
+        NOT_IMPLEMENTED(id_ << " already defined as " << civ_ << " invalid redefinition as " << id);
     }
+    definition_ = &id;
+}
 
-    void define_tag_type(const tag_info_ptr& ti) {
-        if (tag_info_) {
-            NOT_IMPLEMENTED(id_ << " already definition as " << tag_info_->base_type() << " invalid redefinition as " << ti->base_type());
-        }
-        tag_info_ = ti;
+void symbol::define(const const_int_val& civ) {
+    if (!declaration_ || civ.type != declaration_->ct()) {
+        NOT_IMPLEMENTED("Invalid definition of " << id() << " as " << civ);
     }
-
-    void define_label() {
-        if (label_state_ & 2) {
-            NOT_IMPLEMENTED(id_ << " already defined as label");
-        }
-        label_state_ |= 2;
+    if (definition_) {
+        NOT_IMPLEMENTED(id_ << " already defined as " << *definition_ << " invalid redefinition as " << civ);
     }
-
-    void use_label() {
-        label_state_ |= 1;
+    if (civ_.type != ctype::none) {
+        NOT_IMPLEMENTED(id_ << " already defined as " << civ_ << " invalid redefinition as " << civ);
     }
-
-    void check_label() const {
-        if (label_state_ == 1) {
-            NOT_IMPLEMENTED(id_ << " used as label but not defined");
-        } else if (label_state_ == 2) {
-            NOT_IMPLEMENTED(id_ << " defined as label but not used"); // Warning...
-        }
+    if (!declaration_) {
+        declaration_ = std::make_shared<type>(civ.type);
     }
+    civ_ = civ;
+}
 
-private:
-    const std::string   id_;
-    type_ptr            declaration_;
-    tag_info_ptr        tag_info_;
-    init_decl*          definition_;
-    const_int_val       civ_;
-    int                 label_state_;
-};
+void symbol::define_tag_type(const tag_info_ptr& ti) {
+    if (tag_info_) {
+        NOT_IMPLEMENTED(id_ << " already definition as " << tag_info_->base_type() << " invalid redefinition as " << ti->base_type());
+    }
+    tag_info_ = ti;
+}
+
+void symbol::define_label() {
+    if (label_state_ & 2) {
+        NOT_IMPLEMENTED(id_ << " already defined as label");
+    }
+    label_state_ |= 2;
+}
+
+void symbol::use_label() {
+    label_state_ |= 1;
+}
+
+void symbol::check_label() const {
+    if (label_state_ == 1) {
+        NOT_IMPLEMENTED(id_ << " used as label but not defined");
+    } else if (label_state_ == 2) {
+        NOT_IMPLEMENTED(id_ << " defined as label but not used"); // Warning...
+    }
+}
 
 class scope {
 public:
@@ -349,6 +401,8 @@ public:
 
     bool is_function_scope() const { return !!func_info_; }
     function_info& func_info() { assert(func_info_); return *func_info_; }
+    const std::vector<std::unique_ptr<symbol>>& symbols() const { return symbols_; }
+    const std::vector<std::unique_ptr<scope>>& children() const { return children_; }
 
     symbol* find(const std::string_view id) {
         assert(!id.empty());
@@ -390,10 +444,39 @@ public:
         }
     }
 
+    void add_child(std::unique_ptr<scope>&& scope) {
+        children_.push_back(std::move(scope));
+    }
+
 private:
     function_info* const func_info_;
     std::vector<std::unique_ptr<symbol>> symbols_;
+    std::vector<std::unique_ptr<scope>> children_;
 };
+
+const std::vector<std::unique_ptr<symbol>>& scope_symbols(const scope& sc) { return sc.symbols(); }
+const std::vector<std::unique_ptr<scope>>& scope_children(const scope& sc) { return sc.children(); }
+
+class parse_result::impl {
+public:
+    explicit impl(init_decl_list&& idl, std::unique_ptr<scope>&& global_scope) : idl_{std::move(idl)}, global_scope_{std::move(global_scope)} {
+    }
+    const init_decl_list& decls() const {
+        return idl_;
+    }
+private:
+    init_decl_list         idl_;
+    std::unique_ptr<scope> global_scope_;
+};
+
+parse_result::parse_result(std::unique_ptr<impl>&& impl) : impl_{std::move(impl)} {
+}
+
+parse_result::~parse_result() = default;
+
+const init_decl_list& parse_result::decls() const {
+    return impl_->decls();
+}
 
 class parser {
 public:
@@ -403,10 +486,10 @@ public:
         assert(active_scopes_.empty());
     }
 
-    std::vector<std::unique_ptr<init_decl>> parse() {
+    parse_result parse() {
         try {
             push_scope global_scope{*this};
-            std::vector<std::unique_ptr<init_decl>> res;
+            init_decl_list res;
             while (current().type() != token_type::eof) {
                 if (current().type() == token_type::semicolon) {
                     std::cout << "Ignoring stray semicolon at " << current_source_pos_ << "\n";
@@ -416,7 +499,8 @@ public:
                 auto d = parse_declaration(false);
                 res.insert(res.end(), std::make_move_iterator(d.begin()), std::make_move_iterator(d.end()));
             }
-            return res;
+            assert(active_scopes_.size() == 1);
+            return parse_result{ std::make_unique<parse_result::impl>(std::move(res), std::move(active_scopes_.back())) };
         } catch (const std::exception& e) {
             std::ostringstream oss;
             oss << e.what() << "\n\n";
@@ -447,7 +531,11 @@ private:
             p_.active_scopes_.push_back(std::make_unique<scope>(func_info));
         }
         ~push_scope() {
-            p_.active_scopes_.pop_back();
+            auto& as = p_.active_scopes_;
+            if (as.size() > 1) {
+                as[as.size()-2]->add_child(std::move(as.back()));
+            }
+            as.pop_back();
         }
         scope& this_scope() {
             return *p_.active_scopes_.back();
@@ -510,6 +598,9 @@ private:
         t = void_pointer_type;
     }
 
+    expression_ptr calc_now(const expression& e) {
+        return std::make_unique<const_int_expression>(e.pos(), e.et(), const_int_eval(e));
+    }
 
     void next() {
         //std::cout << "Consuming " << current() << "\n";
@@ -539,7 +630,7 @@ private:
         return false;
     }
 
-    std::vector<std::unique_ptr<init_decl>> parse_declaration(bool parsing_struct_or_union) {
+    init_decl_list parse_declaration(bool parsing_struct_or_union) {
 
         // declaration
         //    declaration_specifiers init-declarator-list? ';'
@@ -554,7 +645,7 @@ private:
 
         const auto ds = parse_declaration_specifiers();
 
-        std::vector<std::unique_ptr<init_decl>> decls;
+        init_decl_list decls;
         if (current().type() == token_type::semicolon) {
             next();
             decls.push_back(std::make_unique<init_decl>(decl_start, decl{ds, ""}));
@@ -597,7 +688,7 @@ private:
                         for (const auto& a: d.t()->function_val().params()) {
                             current_scope().declare(a);
                         }
-                        decls.push_back(std::make_unique<init_decl>(decl_start, std::move(d), parse_compound_statement()));
+                        decls.push_back(std::make_unique<init_decl>(decl_start, std::move(d), parse_compound_statement(), current_scope()));
                         ps.this_scope().check_labels();
                     }
                     current_scope().define(*decls.back());
@@ -1116,7 +1207,7 @@ private:
             const auto ci = sym->const_int_def();
             return std::make_unique<const_int_expression>(pos, sym->decl_type(), ci);
         }
-        return std::make_unique<identifier_expression>(pos, make_ref_t(sym->decl_type()), id);
+        return std::make_unique<identifier_expression>(pos, make_ref_t(sym->decl_type()), *sym);
     }
 
     expression_ptr parse_primary_expression() {
@@ -1314,12 +1405,19 @@ private:
                 }
             }
 
-            return std::make_unique<prefix_expression>(expression_start, et, t, std::move(e));
+            const auto is_const_expr = dynamic_cast<const const_int_expression*>(e.get());
+
+            e = std::make_unique<prefix_expression>(expression_start, et, t, std::move(e));
+
+            if (is_const_expr) {
+                return calc_now(*e);
+            }
+
+            return e;
         }
         if (t == token_type::sizeof_) {
             next();
-            auto se = parse_sizeof_expression(expression_start);
-            return std::make_unique<const_int_expression>(se->pos(), size_t_type, const_int_eval(*se));
+            return calc_now(*parse_sizeof_expression(expression_start));
         }
         return parse_postfix_expression();
     }
@@ -1377,9 +1475,14 @@ private:
                 rhs = parse_expression1(std::move(rhs), look_ahead_precedence);
             }
 
+            //
+            // Type check expressoin
+            //
+
             auto lt = lhs->et();
             auto dlt = decay(lt);
             auto rt = decay(rhs->et());
+
             type_ptr t;
 
             const bool lp = dlt->base() == ctype::pointer_t;
@@ -1456,7 +1559,14 @@ private:
                 }
                 t = std::make_shared<type>(common_type(dlt->ct(), rt->ct()));
             }
+
+            const bool is_const_expr = dynamic_cast<const const_int_expression*>(lhs.get()) && dynamic_cast<const const_int_expression*>(rhs.get());
+
             lhs = std::make_unique<binary_expression>(expression_start, t, op, std::move(lhs), std::move(rhs));
+
+            if (is_const_expr) {
+                lhs = calc_now(*lhs);
+            }
         }
         return std::move(lhs);
     }
@@ -1571,7 +1681,7 @@ private:
                 EXPECT(semicolon);
                 auto sym = get_label(id);
                 sym->use_label();
-                return std::make_unique<goto_statement>(statement_pos, id);
+                return std::make_unique<goto_statement>(statement_pos, *sym);
             }
         case token_type::continue_:
             next();
@@ -1623,7 +1733,7 @@ private:
                 next();
                 auto sym = get_label(id);
                 sym->define_label();
-                return std::make_unique<labeled_statement>(statement_pos, id, parse_statement());
+                return std::make_unique<labeled_statement>(statement_pos, *sym, parse_statement());
             }
             e = parse_expression1(parse_postfix_expression1(parse_identifier_expression(statement_pos, id)), operator_precedence(token_type::comma));
         } else {
@@ -1650,153 +1760,9 @@ private:
         next();
         return std::make_unique<compound_statement>(statement_pos, std::move(ss));
     }
-
-    const_int_val const_int_lookup(const std::string& id);
-    const_int_val const_int_eval(const expression& e);
-    size_t alignof_type(const type& t);
-    size_t sizeof_type(const type& t);
 };
 
-const_int_val parser::const_int_lookup(const std::string& id) {    
-    /*for (const auto& tt: tag_types_) {
-        if (tt->base_type() != ctype::enum_t) {
-            continue;
-        }
-        const auto ei = static_cast<const enum_info&>(*tt);
-        for (const auto& v: ei.values()) {
-            if (v.id() == id) {
-                return const_int_val{static_cast<uint64_t>(v.val()), ctype::long_long_t};
-            }
-        }
-    }*/
-    NOT_IMPLEMENTED(id);
-}
-
-const_int_val parser::const_int_eval(const expression& e) {
-    if (auto cie = dynamic_cast<const const_int_expression*>(&e)) {
-        return cie->val();
-    } else if (auto ie = dynamic_cast<const identifier_expression*>(&e)) {
-        return const_int_lookup(ie->id());
-    } else if (auto ue = dynamic_cast<const unary_expression*>(&e)) {
-        auto val = const_int_eval(ue->e());
-        switch (ue->op()) {
-        case token_type::plus:
-            break;
-        case token_type::minus:
-            val.val ^= UINT64_MAX;
-            ++val.val;
-            break;
-        case token_type::bnot:
-            val.val ^= UINT64_MAX;
-            break;
-        case token_type::not_:
-            val.val = val.val ? 0 : 1;
-            break;
-        default:
-            NOT_IMPLEMENTED(ue->op() << " " << val);
-        }
-        return val;
-    } else if (auto be = dynamic_cast<const binary_expression*>(&e)) {
-        auto l = const_int_eval(be->l());
-        auto r = const_int_eval(be->r());
-        const auto t = common_type(l.type, r.type);
-        l = cast(l, t);
-        r = cast(r, t);
-        switch (be->op()) {
-#define DO(op) return const_int_val{!(t & ctype::unsigned_f) ? static_cast<uint64_t>(static_cast<int64_t>(l.val) op static_cast<int64_t>(r.val)): l.val op r.val, t}
-#define DO_DIV(op) if (!r.val) NOT_IMPLEMENTED("Division by zero"); DO(op)
-        case token_type::plus:   DO(+);
-        case token_type::minus:  DO(-);
-        case token_type::star:   DO(*);
-        case token_type::div:    DO_DIV(/);
-        case token_type::mod:    DO_DIV(%);
-        case token_type::lt:     DO(< );
-        case token_type::lteq:   DO(<=);
-        case token_type::gteq:   DO(>=);
-        case token_type::gt:     DO(> );
-        case token_type::eqeq:   DO(==);
-        case token_type::noteq:  DO(!=);
-        case token_type::lshift: DO(<<);
-        case token_type::rshift: DO(>>);
-#undef DO
-        default:
-            NOT_IMPLEMENTED(l << " " << be->op() << " " << r);
-        }
-    } else if (auto se = dynamic_cast<const sizeof_expression*>(&e)) {
-        uint64_t size;
-        if (se->arg_is_type()) {
-            size = sizeof_type(*se->t());
-        } else {
-            size = sizeof_type(*to_rvalue(se->e().et()));
-        }
-        return const_int_val{size, ctype::long_long_t | ctype::unsigned_f};
-    } else if (auto ce = dynamic_cast<const conditional_expression*>(&e)) {
-        if (const_int_eval(ce->cond()).val) {
-            return const_int_eval(ce->l());
-        } else {
-            return const_int_eval(ce->r());
-        }
-    }
-
-    NOT_IMPLEMENTED(e);
-}
-
-size_t parser::alignof_type(const type& t) {
-    const auto base = t.base();
-    if (is_arithmetic(base) || base == ctype::pointer_t) {
-        return sizeof_type(t);
-    } else if (base == ctype::struct_t) {
-        if (!t.struct_val().size()) NOT_IMPLEMENTED("Use of incomplete type " << t);
-        return t.struct_val().align();
-    } else if (base == ctype::union_t) {
-        if (!t.union_val().size()) NOT_IMPLEMENTED("Use of incomplete type " << t);
-        return t.union_val().align();
-    } else if (base == ctype::array_t) {
-        return alignof_type(*t.array_val().t());
-    } else if (base == ctype::enum_t) {
-        return sizeof_type(*int_type);
-    }
-
-    NOT_IMPLEMENTED(t);
-}
-
-size_t parser::sizeof_type(const type& t) {
-    constexpr size_t pointer_size = 8;
-    switch (t.base()) {
-    case ctype::void_t:         NOT_IMPLEMENTED(t);
-    case ctype::plain_char_t:   return 1;
-    case ctype::char_t:         return 1;
-    case ctype::short_t:        return 2;
-    case ctype::int_t:          return 4;
-    case ctype::long_t:         return 4;
-    case ctype::long_long_t:    return 8;
-    case ctype::float_t:        return 4;
-    case ctype::double_t:       return 8;
-    case ctype::long_double_t:  return 8;
-    case ctype::pointer_t:      return pointer_size;
-    case ctype::array_t:
-        if (const auto& ai = t.array_val(); ai.bound() == array_info::unbounded) {
-            return pointer_size;
-        } else {
-            if (ai.bound() == 0) {
-                NOT_IMPLEMENTED(t);
-            }
-            return ai.bound() * sizeof_type(*ai.t());
-        }
-    case ctype::struct_t:
-        if (!t.struct_val().size()) NOT_IMPLEMENTED("Use of incomplete type " << t);
-        return t.struct_val().size();
-    case ctype::union_t:
-        if (!t.union_val().size()) NOT_IMPLEMENTED("Use of incomplete type " << t);
-        return t.union_val().size();
-    case ctype::enum_t:         return sizeof_type(*int_type);
-    case ctype::function_t:     NOT_IMPLEMENTED(t);
-    default:
-        NOT_IMPLEMENTED(t);
-    }
-}
-
-std::vector<std::unique_ptr<init_decl>> parse(source_manager& sm, const source_file& source) {
+parse_result parse(source_manager& sm, const source_file& source) {
     parser p{sm, source};
     return p.parse();
 }

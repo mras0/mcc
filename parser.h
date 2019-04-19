@@ -11,8 +11,60 @@ namespace mcc {
 
 class expression;
 class statement;
+class init_decl;
+class scope;
+class parser;
 using expression_ptr = std::unique_ptr<expression>;
 using statement_ptr = std::unique_ptr<statement>;
+using tag_info_ptr = std::shared_ptr<tag_info_type>;
+using init_decl_list = std::vector<std::unique_ptr<init_decl>>;
+
+//
+// Symbol
+//
+// Label names have function scope
+// Tag names can be scope but are otherwise global (no shadowing allowed)
+// Orignary names can shadow (but are still disallowed in the same scope)
+class symbol {
+public:
+    explicit symbol(const std::string_view id)
+        : id_{id}
+        , declaration_{nullptr}
+        , tag_info_{nullptr}
+        , definition_{nullptr}
+        , civ_{0, ctype::none}
+        , label_state_{0} {
+    }
+
+    const std::string& id() const { return id_; }
+    type_ptr decl_type() const { return declaration_; }
+    const tag_info_ptr& tag_info() const { return tag_info_; }
+
+    bool has_const_int_def() const { return civ_.type != ctype::none; }
+    const const_int_val& const_int_def() const { assert(has_const_int_def()); return civ_; }
+
+private:
+    const std::string   id_;
+    type_ptr            declaration_;
+    tag_info_ptr        tag_info_;
+    init_decl*          definition_;
+    const_int_val       civ_;
+    int                 label_state_;
+
+    friend scope;
+    friend parser;
+
+    void declare(const type_ptr& t);
+    void define(init_decl& id);
+    void define(const const_int_val& civ);
+    void define_tag_type(const tag_info_ptr& ti);
+    void define_label();
+    void use_label();
+    void check_label() const;
+};
+
+const std::vector<std::unique_ptr<symbol>>& scope_symbols(const scope& sc);
+const std::vector<std::unique_ptr<scope>>& scope_children(const scope& sc);
 
 //
 // Expression
@@ -42,17 +94,17 @@ private:
 
 class identifier_expression : public expression {
 public:
-    explicit identifier_expression(const source_position& pos, const type_ptr& et, const std::string& id) : expression{pos, et}, id_{id} {
-        assert(!id_.empty());
+    explicit identifier_expression(const source_position& pos, const type_ptr& et, const symbol& sym) : expression{pos, et}, sym_{sym} {
+        assert(!sym_.id().empty());
     }
 
-    const std::string& id() const { return id_; }
+    const symbol& sym() const { return sym_; }
 
 private:
-    std::string id_;
+    const symbol& sym_;
 
     void do_print(std::ostream& os) const override {
-        os << id_;
+        os << sym_.id();
     }
 };
 
@@ -305,12 +357,12 @@ private:
 
 class declaration_statement : public statement {
 public:
-    explicit declaration_statement(const source_position& pos, std::vector<std::unique_ptr<init_decl>>&& ds) : statement{pos}, ds_{std::move(ds)} {
+    explicit declaration_statement(const source_position& pos, init_decl_list&& ds) : statement{pos}, ds_{std::move(ds)} {
     }
 
-    const std::vector<std::unique_ptr<init_decl>>& ds() const { return ds_; }
+    const init_decl_list& ds() const { return ds_; }
 private:
-    std::vector<std::unique_ptr<init_decl>> ds_;
+    init_decl_list ds_;
 
    void do_print(std::ostream& os) const override;
 };
@@ -320,7 +372,7 @@ public:
     explicit labeled_statement(const source_position& pos, statement_ptr&& s) : statement{pos}, val_{}, s_{std::move(s)} {
         assert(s_);
     }
-    explicit labeled_statement(const source_position& pos, const std::string& label, statement_ptr&& s) : statement{pos}, val_{label}, s_{std::move(s)} {
+    explicit labeled_statement(const source_position& pos, const symbol& label, statement_ptr&& s) : statement{pos}, val_{&label}, s_{std::move(s)} {
         assert(s_);
     }
     explicit labeled_statement(const source_position& pos, expression_ptr&& e, statement_ptr&& s) : statement{pos}, val_{std::move(e)}, s_{std::move(s)} {
@@ -333,10 +385,10 @@ public:
     bool is_case_label()    const { return val_.index() == 2; }
     bool is_normal_label()  const { return val_.index() == 1; }
 
-    const std::string& label() const { assert(is_normal_label()); return std::get<1>(val_); }
+    const symbol& label() const { assert(is_normal_label()); return *std::get<1>(val_); }
 
 private:
-    std::variant<std::monostate, std::string, expression_ptr> val_;
+    std::variant<std::monostate, const symbol*, expression_ptr> val_;
     statement_ptr s_;
 
     void do_print(std::ostream& os) const override;
@@ -457,13 +509,13 @@ private:
 
 class goto_statement : public statement {
 public:
-    explicit goto_statement(const source_position& pos, const std::string& target) : statement{pos}, target_{target} {
+    explicit goto_statement(const source_position& pos, const symbol& target) : statement{pos}, target_{target} {
     }
 
-    const std::string& target() const { return target_; }
+    const symbol& target() const { return target_; }
 
 private:
-    std::string target_;
+    const symbol& target_;
 
     void do_print(std::ostream& os) const override;
 };
@@ -526,8 +578,8 @@ public:
         assert(d_.t()->base() != ctype::function_t && std::get<1>(val_));
     }
 
-    explicit init_decl(const source_position& pos, decl&& d, std::unique_ptr<compound_statement>&& body) : pos_{pos}, d_{std::move(d)}, val_{std::move(body)} {
-        assert(d_.t()->base() == ctype::function_t && std::get<2>(val_));
+    explicit init_decl(const source_position& pos, decl&& d, std::unique_ptr<compound_statement>&& body, const scope& sc) : pos_{pos}, d_{std::move(d)}, val_{func_info{std::move(body), &sc}} {
+        assert(d_.t()->base() == ctype::function_t && std::get<2>(val_).cs_);
     }
 
     const source_position& pos() const { return pos_; }
@@ -544,8 +596,13 @@ public:
     }
 
     const compound_statement& body() const {
-        assert(d_.t()->base() == ctype::function_t && std::get<2>(val_));
-        return *std::get<2>(val_);
+        assert(d_.t()->base() == ctype::function_t);
+        return *std::get<2>(val_).cs_;
+    }
+
+    const scope& local_scope() const {
+        assert(d_.t()->base() == ctype::function_t);
+        return *std::get<2>(val_).scope_;
     }
 
     friend std::ostream& operator<<(std::ostream& os, const init_decl& d) {
@@ -559,15 +616,16 @@ public:
 private:
     source_position pos_;
     decl d_;
-    std::variant<std::monostate, expression_ptr, std::unique_ptr<compound_statement>> val_;
+    struct func_info {
+        std::unique_ptr<compound_statement> cs_;
+        const scope* scope_;
+    };
+    std::variant<std::monostate, expression_ptr, func_info> val_;
 };
 
 //
-// Parser
+// Vistitors
 //
-
-std::vector<std::unique_ptr<init_decl>> parse(source_manager& sm, const source_file& source);
-
 template<typename V>
 auto visit(V&& v, const expression& e) {
 #define DISPATCH(t) if (auto p = dynamic_cast<const t##_expression*>(&e)) return v(*p);
@@ -583,6 +641,33 @@ auto visit(V&& v, const statement& s) {
 #undef DISPATCH
     throw std::runtime_error("Unknown statement");
 }
+
+
+//
+// Misc
+//
+
+void foo(const scope& sc);
+
+//
+// Parser
+//
+
+class parser;
+class parse_result {
+public:
+    class impl;
+    parse_result(std::unique_ptr<impl>&& impl);
+    ~parse_result();
+
+    const init_decl_list& decls() const;
+
+private:
+    friend parser;
+    std::unique_ptr<impl> impl_;
+};
+
+parse_result parse(source_manager& sm, const source_file& source);
 
 
 } // namespace mcc
