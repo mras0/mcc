@@ -343,6 +343,10 @@ size_t sizeof_type(ctype ct);
 size_t sizeof_type(const type& t);
 size_t alignof_type(const type& t);
 
+constexpr size_t round_up(size_t val, size_t align) {
+    return (val + align - 1) & ~(align - 1);
+}
+
 } // namespace mcc
 
 #endif

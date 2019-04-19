@@ -7,11 +7,6 @@
 
 namespace mcc {
 
-constexpr size_t round_up(size_t val, size_t align) {
-    return (val + align - 1) & ~(align - 1);
-}
-
-
 class push_precedence {
 public:
     explicit push_precedence(std::ostream& os, int precedence) : os_{os}, sf_{os}, need_parenthesis_{sf_.precedence(precedence)} {
@@ -349,7 +344,11 @@ void symbol::define(init_decl& id) {
     if (civ_.type != ctype::none) {
         NOT_IMPLEMENTED(id_ << " already defined as " << civ_ << " invalid redefinition as " << id);
     }
+    if (id.sym_) {
+        NOT_IMPLEMENTED("init_decl already attached to symbol?");
+    }
     definition_ = &id;
+    id.sym_ = this;
 }
 
 void symbol::define(const const_int_val& civ) {
@@ -460,9 +459,13 @@ const std::vector<std::unique_ptr<scope>>& scope_children(const scope& sc) { ret
 class parse_result::impl {
 public:
     explicit impl(init_decl_list&& idl, std::unique_ptr<scope>&& global_scope) : idl_{std::move(idl)}, global_scope_{std::move(global_scope)} {
+        assert(global_scope_);
     }
     const init_decl_list& decls() const {
         return idl_;
+    }
+    const scope& global_scope() const {
+        return *global_scope_;
     }
 private:
     init_decl_list         idl_;
@@ -476,6 +479,10 @@ parse_result::~parse_result() = default;
 
 const init_decl_list& parse_result::decls() const {
     return impl_->decls();
+}
+
+const scope& parse_result::global_scope() const {
+    return impl_->global_scope();
 }
 
 class parser {
@@ -1483,7 +1490,7 @@ private:
             auto dlt = decay(lt);
             auto rt = decay(rhs->et());
 
-            type_ptr t;
+            type_ptr t, common_t;
 
             const bool lp = dlt->base() == ctype::pointer_t;
             const bool rp = rt->base() == ctype::pointer_t;
@@ -1506,10 +1513,12 @@ private:
 
             if (op == token_type::comma) {
                 t = rt;
+                common_t = t; // Doesn't matter
             } else if (op == token_type::andand || op == token_type::oror) {
                 check_convertible(bool_type, dlt);
                 check_convertible(bool_type, rt);
                 t = bool_type;
+                common_t = t; // Doesn't matter
             } else if (is_assignment_op(op)) {
                 if (lt->base() != ctype::reference_t) {
                     NOT_IMPLEMENTED("Expected lvalue in " << *lhs << " got " << *lt);
@@ -1535,34 +1544,37 @@ private:
                     check_convertible(dlt, rt);
                 }
                 t = lt;
+                common_t = dlt;
             } else if (is_comparison_op(op)) {
                 if (lp) handle_const_null(rt, *rhs);
                 if (rp) handle_const_null(dlt, *lhs);
                 check_convertible(dlt, rt, true);
                 t = bool_type;
+                common_t = dlt;
             } else if ((op == token_type::plus || op == token_type::minus) && (lp || rp)) {
                 if (lp && rp) {
                     if (op == token_type::plus || !is_compatible_pointer_type(dlt->pointer_val(), rt->pointer_val(), true)) {
                         NOT_IMPLEMENTED(*lhs << op << *rhs << " " << *dlt << " " << *rt);
                     }
                     t = ptrdiff_t_type;
+                    common_t = dlt;
                 } else if (lp) {
                     check_integral(rt);
-                    t = dlt;
+                    common_t = t = dlt;
                 } else {
                     check_integral(dlt);
-                    t = rt;
+                    common_t = t = rt;
                 }
             } else {
                 if (dlt->base() >= ctype::pointer_t || rt->base() >= ctype::pointer_t) {
                     NOT_IMPLEMENTED(*lhs << op << *rhs << " " << *dlt << " " << *rt);
                 }
-                t = std::make_shared<type>(common_type(dlt->ct(), rt->ct()));
+                common_t = t = std::make_shared<type>(common_type(dlt->ct(), rt->ct()));
             }
 
             const bool is_const_expr = dynamic_cast<const const_int_expression*>(lhs.get()) && dynamic_cast<const const_int_expression*>(rhs.get());
 
-            lhs = std::make_unique<binary_expression>(expression_start, t, op, std::move(lhs), std::move(rhs));
+            lhs = std::make_unique<binary_expression>(expression_start, t, common_t, op, std::move(lhs), std::move(rhs));
 
             if (is_const_expr) {
                 lhs = calc_now(*lhs);

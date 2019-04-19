@@ -39,6 +39,7 @@ public:
     const std::string& id() const { return id_; }
     type_ptr decl_type() const { return declaration_; }
     const tag_info_ptr& tag_info() const { return tag_info_; }
+    const init_decl* definition() const { return definition_; }
 
     bool has_const_int_def() const { return civ_.type != ctype::none; }
     const const_int_val& const_int_def() const { assert(has_const_int_def()); return civ_; }
@@ -272,15 +273,17 @@ private:
 
 class binary_expression : public expression {
 public:
-    explicit binary_expression(const source_position& pos, const type_ptr& et, token_type op, expression_ptr&& l, expression_ptr&& r) : expression{pos, et}, op_{op}, l_{std::move(l)}, r_{std::move(r)} {
-        assert(l_ && r_);
+    explicit binary_expression(const source_position& pos, const type_ptr& et, const type_ptr& common_t, token_type op, expression_ptr&& l, expression_ptr&& r) : expression{pos, et}, common_t_{common_t}, op_{op}, l_{std::move(l)}, r_{std::move(r)} {
+        assert(l_ && r_ && common_t_);
     }
 
+    const type_ptr& common_t() const { return common_t_; }
     token_type op() const { return op_; }
     const expression& l() const { return *l_; }
     const expression& r() const { return *r_; }
 
 private:
+    type_ptr common_t_;
     token_type op_;
     expression_ptr l_;
     expression_ptr r_;
@@ -605,6 +608,11 @@ public:
         return *std::get<2>(val_).scope_;
     }
 
+    const symbol& sym() const {
+        assert(sym_);
+        return *sym_;
+    }
+
     friend std::ostream& operator<<(std::ostream& os, const init_decl& d) {
         os << d.d_;
         if (d.val_.index() == 1) {
@@ -621,6 +629,9 @@ private:
         const scope* scope_;
     };
     std::variant<std::monostate, expression_ptr, func_info> val_;
+    const symbol* sym_;
+
+    friend symbol;
 };
 
 //
@@ -644,12 +655,6 @@ auto visit(V&& v, const statement& s) {
 
 
 //
-// Misc
-//
-
-void foo(const scope& sc);
-
-//
 // Parser
 //
 
@@ -661,6 +666,7 @@ public:
     ~parse_result();
 
     const init_decl_list& decls() const;
+    const scope& global_scope() const;
 
 private:
     friend parser;

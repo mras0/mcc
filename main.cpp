@@ -1009,12 +1009,176 @@ public:
     }
 };
 
+const char* compare_cond(token_type op, bool unsigned_) {
+    switch (op) {
+    case token_type::lt:    return unsigned_ ? "B" : "L";
+    case token_type::lteq:  return unsigned_ ? "BE" : "LE";
+    case token_type::eqeq:  return "EQ";
+    case token_type::noteq: return "NE";
+    case token_type::gt:    return unsigned_ ? "A" : "G";
+    case token_type::gteq:  return unsigned_ ? "AE" : "GE";
+    default: NOT_IMPLEMENTED(op);
+    }
+}
+
+const char* type_size_name(ctype t) {
+    assert(is_integral(t));
+    switch (base_type(t)) {
+    case ctype::plain_char_t:
+    case ctype::char_t:
+        return "byte";
+    case ctype::short_t:
+        return "word";
+    case ctype::int_t:
+    case ctype::long_t:
+        return "dword";
+    case ctype::long_long_t:
+        return "qword";
+    }
+    NOT_IMPLEMENTED(t);
+}
+
+const char* bin_op_inst(token_type t) {
+    switch (t) {
+    case token_type::plus:  return "ADD";
+    case token_type::minus: return "SUB";
+    case token_type::and_:  return "AND";
+    case token_type::xor_:  return "XOR";
+    case token_type::or_:   return "OR";
+    }
+    NOT_IMPLEMENTED(t);
+}
+
+const char* const arg_reg_names[] = { "RCX", "RDX", "R8", "R9" };
+
+//   ......
+//   xxxxx8 arg 5            // RBP+0x38
+//   xxxxx0 arg 4            // RBP+0x30
+//   xxxxx8 arg 3 (home)     // RBP+0x28
+//   xxxxx0 arg 2 (home)     // RBP+0x20
+//   xxxxx8 arg 1 (home)     // RBP+0x18
+//   xxxxx0 arg 0 (home)     // RBP+0x10
+//   xxxxx8 Return address   // RBP+0x08
+//   xxxxx0 Saved RBP        // RBP+0x00
+//   xxxxx8 local 0          // RBP-0x08
+//   xxxxx0 local 1          // RBP-0x10
+//   ......
+
+class codegen_context {
+public:
+    explicit codegen_context() {
+    }
+
+    size_t function_prologue(const init_decl& id) {
+        const auto initial_size = active_syms_.size();
+
+        assert(id.has_init_val() && id.d().t()->base() == ctype::function_t);
+        //const auto& fi = id.d().t()->function_val();
+        const auto& func_scope = id.local_scope();
+
+        std::cout << "_" << id.d().id() << ":" << "\n";
+        std::cout << "\tPUSH\tRBP\n";
+        std::cout << "\tMOV\tRBP, RSP\n";
+
+        const auto& ss = scope_symbols(func_scope);
+        size_t rbp_offset = 0x10;
+        for (size_t i = 0; i < ss.size(); ++i) {
+            const auto& s = *ss[i];
+            const auto b = s.decl_type()->base();
+            if (is_integral(b) || b == ctype::pointer_t) {
+                const auto addr = "RBP+" +std::to_string(rbp_offset);
+                active_syms_.push_back(sym_info{&s, addr});
+                std::cout << "\t; " << s.id() << " = [" << addr << "]\n";
+                if (i < 4) {
+                    std::cout << "\tMOV\t[" << addr << "], " << arg_reg_names[i] << "\n";
+                }
+                rbp_offset += 0x08;
+            } else {
+                NOT_IMPLEMENTED(decl(s.decl_type(), s.id()));
+            }
+        }
+
+        const auto& func_scope_children = scope_children(func_scope);
+        assert(func_scope_children.size() == 1);
+        const auto locals_size = round_up(handle_locals(*func_scope_children[0], 0), 16);
+
+        std::cout << "\tSUB\tRSP, " << locals_size << "\n";
+
+        ret_label_ = make_label();
+
+        return initial_size;
+    }
+
+    void function_epilogue(uint64_t cookie) {
+        std::cout << ret_label_ << ":\n";
+        std::cout << "\tMOV\tRSP, RBP\n";
+        std::cout << "\tPOP\tRBP\n";
+        std::cout << "\tRET\n";
+        assert(cookie <= active_syms_.size());
+        active_syms_.erase(active_syms_.begin() + cookie, active_syms_.end());
+        ret_label_.clear();
+    }
+
+    std::string make_label() {
+        return "L" + std::to_string(num_labels_++);
+    }
+
+    std::string lookup(const symbol& s) const {
+        for (auto it = active_syms_.crbegin(), end = active_syms_.crend(); it != end; ++it) {
+            if (it->sym == &s) {
+                return it->addr;
+            }
+        }
+        if (s.decl_type()->base() == ctype::function_t) {
+            return s.id();
+        }
+        NOT_IMPLEMENTED("Lookup failed for " << decl(s.decl_type(), s.id()));
+    }
+
+    const std::string& ret_label() const {
+        assert(!ret_label_.empty());
+        return ret_label_;
+    }
+
+private:
+    struct sym_info {
+        const symbol* sym;
+        std::string   addr;
+    };
+    std::vector<sym_info> active_syms_;
+    size_t num_labels_ = 0;
+    std::string ret_label_;
+
+    size_t handle_locals(const scope& sc, size_t current_size) {
+        for (const auto& s: scope_symbols(sc)) {
+            if (!s->decl_type()) continue;
+            const auto size  = sizeof_type(*s->decl_type());
+            const auto align = alignof_type(*s->decl_type());
+            current_size = round_up(current_size + size, align);
+            active_syms_.push_back(sym_info{s.get(), "RBP-"+std::to_string(current_size)});
+        }
+        for (const auto& c: scope_children(sc)) {
+            current_size = handle_locals(*c, current_size);
+        }
+        return current_size;
+    }
+};
 
 class test_visitor {
 public:
     explicit test_visitor() {}
 
+    void lvalue_to_rvalue(const type_ptr& t, const std::string& reg) {
+        if (t->base() == ctype::reference_t) {
+            assert(is_integral(t->reference_val()->base()));
+            std::cout << "\tMOV\t" << reg << ", [" << reg << "]\n";
+        } else {
+            assert(is_integral(t->base()));
+        }
+    }
+
     auto handle(const expression& e) {
+        std::cout << "\t; " << e << "\n";
         return visit(*this, e);
     }
 
@@ -1028,25 +1192,17 @@ public:
         }
         const auto& d = id.d();
         if (d.t()->base() == ctype::function_t) {
-            std::cout << "TODO: Handle " << d << "\n";
-            const auto& fi = d.t()->function_val();
-            std::cout << fi << "\n";
-            const auto& sc = id.local_scope();
-            foo(sc);
+            const auto cookie = ctx_.function_prologue(id);
             handle(id.body());
+            ctx_.function_epilogue(cookie);
         } else {
             std::cout << "TODO: Handle " << d << "\n";
         }
     }
 
-    static void foo(const scope& sc) {
-        for (const auto& s: scope_symbols(sc)) {
-            if (!s->decl_type()) continue;
-            std::cout << indent{} << decl{s->decl_type(), s->id()} << "\n";
-        }
-        source_formatter sf{std::cout, default_indent};
-        for (const auto& c: scope_children(sc)) {
-            foo(*c);
+    void do_all(const parse_result& pr) {
+        for (auto& d: pr.decls()) {
+            handle(*d);
         }
     }
 
@@ -1054,54 +1210,115 @@ public:
     // Expression
     //
     void operator()(const identifier_expression& e) {
-        (void)e;
+        std::cout << "\tLEA\tRAX, [" << ctx_.lookup(e.sym()) << "]\n";
     }
     void operator()(const const_int_expression& e) {
-        (void)e;
+        std::cout << "\tMOV\tRAX, " << e.val() << "\n";
     }
     void operator()(const const_float_expression& e) {
+        if (1) NOT_IMPLEMENTED(e);
         (void)e;
     }
     void operator()(const string_lit_expression& e) {
-        (void)e;
+        const auto l = ctx_.make_label();
+        std::cout << "SECTION DATA\n";
+        std::cout << l << ": DB " << quoted(e.text()) << "\n";
+        std::cout << "SECTION CODE\n";
+        std::cout << "\tMOV\tRAX, " << l << "\n";
     }
     void operator()(const initializer_expression& e) {
+        if (1) NOT_IMPLEMENTED(e);
         for (const auto& e2: e.es()) {
             handle(*e2);
         }
     }
     void operator()(const array_access_expression& e) {
         handle(e.a());
+        std::cout << "\tPUSH\tRAX\n";
         handle(e.i());
+        std::cout << "\tPOP\tRCX\n";
+        std::cout << "\tMOV\tRAX, " << type_size_name(to_rvalue(e.et())->ct()) << " [RAX+RCX]\n"; 
     }
     void operator()(const function_call_expression& e) {
-        handle(e.f());
-        for (const auto& a: e.args()) {
-            handle(*a);
+        const auto ns = round_up(std::max(4ULL, e.args().size()) * 8, 16);
+        std::cout << "\tSUB\tRSP, " << ns << "\n";
+        size_t offset = 0;
+        for (auto it = e.args().crbegin(), end = e.args().crend(); it != end; ++it, offset += 8) {
+            handle(**it);
+            std::cout << "\tMOV\t[RSP+" << offset << "], RAX\n";
         }
+        for (size_t i = 0; i < std::min(4ULL, e.args().size()); ++i) {
+            std::cout << "\tMOV\t" << arg_reg_names[i] << ", [RSP+" << i*4 << "]\n";
+        }
+        handle(e.f());
+        std::cout << "\tCALL\t[RAX]\n";
+        std::cout << "\tADD\tRSP, " << ns << "\n";
     }
     void operator()(const access_expression& e) {
+        if (1) NOT_IMPLEMENTED(e);
         handle(e.e());
     }
     void operator()(const sizeof_expression& e) {
+        if (1) NOT_IMPLEMENTED(e);
         if (!e.arg_is_type()) {
             handle(e.e());
         }
     }
     void operator()(const prefix_expression& e) {
         handle(e.e());
+        if (e.op() == token_type::star) {
+            return;
+        } else if (e.op() == token_type::plusplus) {
+            lvalue_to_rvalue(e.et(), "RAX");
+            assert(is_integral(to_rvalue(e.et())->base()));
+            std::cout << "\tINC\tRAX\n";
+        } else {
+            NOT_IMPLEMENTED(e << ":" << *e.et());
+        }
     }
     void operator()(const postfix_expression& e) {
         handle(e.e());
+        if (e.op() == token_type::minusminus || e.op() == token_type::plusplus) {
+            const auto t = to_rvalue(e.e().et());
+            const char* szname = "qword";
+            size_t count = 1;
+            if (is_integral(t->base())) {
+                szname = type_size_name(t->base());
+            } else {
+                assert(t->base() == ctype::pointer_t);
+                count = sizeof_type(*t->pointer_val());
+            }
+            std::cout << "\t" << (e.op() == token_type::plusplus ? "ADD":  "SUB") << "\t" << szname << " [RAX], " << count << "\n";
+        } else {
+            NOT_IMPLEMENTED(e.op() << " -> " << *e.et());
+        }
     }
     void operator()(const cast_expression& e) {
+        if (1) NOT_IMPLEMENTED(e);
         handle(e.e());
     }
     void operator()(const binary_expression& e) {
-        handle(e.l());
         handle(e.r());
+        lvalue_to_rvalue(e.r().et(), "RAX");
+        std::cout << "\tPUSH\tRAX\n";
+        handle(e.l());
+        std::cout << "\tPOP\tRCX\n";
+        // RAX=op1, RCX=op2
+        if (is_comparison_op(e.op())) {
+            lvalue_to_rvalue(e.l().et(), "RAX");
+            std::cout << "\tCMP\tRAX, RCX\n";
+            // FIXME: Use deduced common_type
+            std::cout << "\tSET" << compare_cond(e.op(), !!(e.common_t()->ct() & ctype::unsigned_f)) << "\tAL\n";
+        } else if (is_assignment_op(e.op())) {
+            const char* inst_name = e.op() == token_type::eq ? "MOV" : bin_op_inst(without_assignment(e.op()));
+            std::cout << "\t" << inst_name << "\t[RAX], RCX\n";
+        } else {
+            lvalue_to_rvalue(e.l().et(), "RAX");
+            std::cout << "\t" << bin_op_inst(e.op()) << "\tRAX, RCX\n";
+        }
     }
     void operator()(const conditional_expression& e) {
+        if (1) NOT_IMPLEMENTED(e);
         handle(e.cond());
         handle(e.l());
         handle(e.r());
@@ -1116,11 +1333,15 @@ public:
         for (const auto& ds: s.ds()) {
             if (ds->has_init_val()) {
                 assert(ds->d().t()->base() != ctype::function_t);
+                auto addr = ctx_.lookup(ds->sym());
+                std::cout << "\t; " << ds->d().id() << " = [" << addr << "]\n";
                 handle(ds->init_expr());
+                std::cout << "\tMOV\t[" << addr << "], RAX\n";
             }
         }
     }
     void operator()(const labeled_statement& s) {
+        if (1) NOT_IMPLEMENTED(s);
         handle(s.s());
     }
     void operator()(const compound_statement& s) {
@@ -1132,6 +1353,7 @@ public:
         handle(s.e());
     }
     void operator()(const if_statement& s) {
+        if (1) NOT_IMPLEMENTED(s);
         handle(s.cond());
         handle(s.if_s());
         if (s.else_s()) {
@@ -1139,47 +1361,71 @@ public:
         }
     }
     void operator()(const switch_statement& s) {
+        if (1) NOT_IMPLEMENTED(s);
         handle(s.e());
         handle(s.s());
     }
     void operator()(const while_statement& s) {
+        const auto l_start = ctx_.make_label();
+        const auto l_end   = ctx_.make_label();
+        std::cout << l_start << ":\n";
         handle(s.cond());
+        std::cout << "\tTEST\tAL,AL\n";
+        std::cout << "\tJZ\t" << l_end << "\n";
         handle(s.s());
+        std::cout << "\tJMP\t" << l_start << "\n";
+        std::cout << l_end << ":\n";
     }
     void operator()(const do_statement& s) {
+        if (1) NOT_IMPLEMENTED(s);
         handle(s.s());
         handle(s.cond());
     }
     void operator()(const for_statement& s) {
         handle(s.init());
-        if (s.cond()) handle(*s.cond());
-        if (s.iter()) handle(*s.iter());
+        auto l_cond = ctx_.make_label();
+        auto l_iter = ctx_.make_label();
+        auto l_end = ctx_.make_label();
+        std::cout << l_cond << ":\n";
+        if (s.cond()) {
+            handle(*s.cond());
+            std::cout << "\tTEST\tAL,AL\n";
+            std::cout << "\tJZ\t" << l_end << "\n";
+        }
         handle(s.body());
+        std::cout << l_iter << ":\n";
+        if (s.iter()) handle(*s.iter());
+        std::cout << "\tJMP\t" << l_cond << "\n";
+        std::cout << l_end << ":\n";
     }
     void operator()(const goto_statement& s) {
+        if (1) NOT_IMPLEMENTED(s);
         (void)s;
     }
     void operator()(const continue_statement& s) {
+        if (1) NOT_IMPLEMENTED(s);
         (void)s;
     }
     void operator()(const break_statement& s) {
+        if (1) NOT_IMPLEMENTED(s);
         (void)s;
     }
     void operator()(const return_statement& s) {
         if (s.e()) {
             handle(*s.e());
         }
+        std::cout << "\tJMP\t" << ctx_.ret_label() << "\n";
     }
+
+private:
+    codegen_context ctx_;
 };
 
 void process_one(source_manager& sm, const std::string& filename) {
     std::cout << filename << "\n";
-    auto pr = parse(sm, sm.load(filename));
     test_visitor vis{};
-    for (const auto& d: pr.decls()) {
-        vis.handle(*d);
-    }
-}
+    vis.do_all(parse(sm, sm.load(filename)));
+} 
 
 int main(int argc, char* argv[]) {
     try {
