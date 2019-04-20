@@ -343,10 +343,11 @@ bool unsigned_arit(const type& t)  {
     return t.base() == ctype::pointer_t || !!(t.ct() & ctype::unsigned_f);
 }
 
-std::string arit_op_name(token_type t) {
+std::string arit_op_name(token_type t, bool is_unsigned) {
     switch (t) {
     case token_type::plus:  return "ADD";
     case token_type::minus: return "SUB";
+    case token_type::star:  return is_unsigned ? "MUL" : "IMUL";
     case token_type::and_:  return "AND";
     case token_type::xor_:  return "XOR";
     case token_type::or_:   return "OR";
@@ -468,9 +469,14 @@ public:
         emit("MOV", "RAX", l);
     }
     void operator()(const array_access_expression& e) {
-        handle_and_convert(e.a(), decay(e.a().et()));
+        const auto& at = decay(e.a().et());
+        const auto element_size = sizeof_type(*at->pointer_val());
+        handle_and_convert(e.a(), at);
         emit("PUSH", "RAX");
         handle_and_convert(e.i(), std::make_shared<type>(ctype::long_long_t));
+        if (element_size > 1) {
+            emit("IMUL", "RAX", element_size);
+        }
         emit("POP", "RCX");
         emit("LEA", "RAX", "[RAX+RCX]");
     }
@@ -590,7 +596,9 @@ public:
     //
     // Statement
     //
-    void operator()(const empty_statement& s) { NOT_IMPLEMENTED(s); }
+    void operator()(const empty_statement& s) {
+        (void)s;
+    }
     void operator()(const declaration_statement& s) {
         for (const auto& ds: s.ds()) {
             if (!ds->has_init_val()) {
@@ -627,7 +635,24 @@ public:
     void operator()(const expression_statement& s) {
         handle(s.e());
     }
-    void operator()(const if_statement& s) { NOT_IMPLEMENTED(s); }
+    void operator()(const if_statement& s) {
+        const auto l_end   = make_label();
+        const auto l_else  = s.else_s() ? make_label() : l_end;
+        NEXT_COMMENT("if start");
+        handle(s.cond());
+        emit("TEST", "AL", "AL");
+        emit("JZ", l_else);
+        NEXT_COMMENT("if part");
+        handle(s.if_s());
+        if (s.else_s()) {
+            emit("JMP", l_end);
+            NEXT_COMMENT("if else");
+            emit_label(l_else);
+            handle(*s.else_s());
+        }
+        NEXT_COMMENT("if end");
+        emit_label(l_end);
+    }
     void operator()(const switch_statement& s) { NOT_IMPLEMENTED(s); }
     void operator()(const while_statement& s) {
         const auto l_start = make_label();
@@ -734,6 +759,7 @@ private:
        syms_.push_back(sym_info{&d.sym(), 0});
 
         emit_section_change("code");
+        NEXT_COMMENT(d.d());
         emit_label(name_mangle(d.d().id()));
         emit("PUSH", "RBP");
         emit("MOV", "RBP", "RSP");
@@ -748,7 +774,7 @@ private:
             add_sym(*s, offset);
 
             if (arg_cnt < 4) {
-                if (!is_integral(t->base()) && t->base() != ctype::pointer_t) NOT_IMPLEMENTED(decl(t, s->id()));
+                if (!is_integral(t->base()) && t->base() != ctype::pointer_t && t->base() != ctype::array_t) NOT_IMPLEMENTED(decl(t, s->id()));
                 NEXT_COMMENT(s->id());
                 emit("MOV", rbp_str(offset), arg_regs[arg_cnt]);
             }
@@ -775,6 +801,9 @@ private:
 
    void handle_conversion(const type_ptr& dst, const type_ptr& src) {
         if (types_equal(*dst, *src)) {
+            return;
+        }
+        if (dst->base() == ctype::pointer_t && src->base() == ctype::pointer_t && is_compatible_pointer_type(dst->pointer_val(), src->pointer_val())) {
             return;
         }
         assert(dst->base() != ctype::reference_t);
@@ -846,7 +875,7 @@ private:
         if (!is_integral(b)) {
             NOT_IMPLEMENTED(op << " " << *t);
         }
-        emit(arit_op_name(op), reg_name_for_type(b, RAX), reg_name_for_type(b, RDX));
+        emit(arit_op_name(op, unsigned_arit(*t)), reg_name_for_type(b, RAX), reg_name_for_type(b, RDX));
     }
 
     void handle_incr_decr(token_type op, const type_ptr& t, bool is_prefix) {

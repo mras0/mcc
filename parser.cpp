@@ -1108,7 +1108,7 @@ private:
             if (d.t()->base() == ctype::none) {
                 NOT_IMPLEMENTED(d);
             }
-            arg_types.push_back(d);
+            arg_types.push_back(decl{decay(d.t()), d.id()});
             if (current().type() != token_type::comma) {
                 break;
             }
