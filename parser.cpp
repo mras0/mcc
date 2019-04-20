@@ -1327,6 +1327,8 @@ private:
                     NOT_IMPLEMENTED("Expected pointer or arithmetic type got " << *et << " in " << *e);
                 }
 
+                et = rt;
+
                 e = std::make_unique<postfix_expression>(expression_start, et, t, std::move(e));
             } else {
                 break;
@@ -1543,8 +1545,7 @@ private:
                 } else {
                     check_convertible(dlt, rt);
                 }
-                t = lt;
-                common_t = dlt;
+                t = common_t = dlt;
             } else if (is_comparison_op(op)) {
                 if (lp) handle_const_null(rt, *rhs);
                 if (rp) handle_const_null(dlt, *lhs);

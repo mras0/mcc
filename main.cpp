@@ -1,6 +1,7 @@
 #include <iostream>
 #include <variant>
 #include <map>
+#include <set>
 
 #include "util.h"
 #include "source.h"
@@ -249,64 +250,44 @@ ELFW(ST_INFO)(sym_bind, ELFW(ST_TYPE)(esym->st_info));
 #undef PP_STR
 #undef PP_ID
 
-namespace mcc {
-#if 0
-// Unary:
-//    { token_type::and_        , "" }       // &
-//    { token_type::star        , "" }       // *
-//    { token_type::plus        , "" }       // +
-//    { token_type::minus       , "" }       // -
-//    { token_type::bnot        , "" }       // ~
-//    { token_type::not_        , "" }       // !
-//    { token_type::plusplus    , "" }       // ++
-//    { token_type::minusminus  , "" }       // --
-//
-// Binary (arithmetic):
-//    { token_type::mod         , "" }       // %
-//    { token_type::and_        , "" }       // &
-//    { token_type::star        , "" }       // *
-//    { token_type::plus        , "" }       // +
-//    { token_type::minus       , "" }       // -
-//    { token_type::div         , "" }       // /
-//    { token_type::lshift      , "" }       // <<
-//    { token_type::rshift      , "" }       // >>
-//    { token_type::xor_        , "" }       // ^
-//    { token_type::or_         , "" }       // |
-//
-// Sequencing:
-//    { token_type::comma       , "" }       // ,
-//
-// Access:
-//    { token_type::arrow       , "" }       // ->
-//    { token_type::dot         , "" }       // .
-//
-// Assignment:
-//    { token_type::eq          , "" }       // =
-//
-// Logical
-//    { token_type::andand      , "" }       // &&
-//    { token_type::oror        , "" }       // ||
-//
-// Comparison
-//    { token_type::lt          , "" }       // <
-//    { token_type::lteq        , "" }       // <=
-//    { token_type::eqeq        , "" }       // ==
-//    { token_type::noteq       , "" }       // !=
-//    { token_type::gt          , "" }       // >
-//    { token_type::gteq        , "" }       // >=
-//
-// cdecl stack layout after call to foo(1,2,3) and standard prologue:
-//
-//  +-----------------+----------------------------+      ^
-//  | 3               | [EBP+0x10]                 |      |
-//  | 2               | [EBP+0x0C]                 |      |
-//  | 1               | [EBP+0x08]                 |    Higher addresses
-//  | Return address  | [EBP+0x04]                 |
-//  | Old EBP         | [EBP]                      |    
-//  | Locals...       | [EBP-0x04]                 |    Lower addresses
-//  | ...             | [EBP-....]                 |      |
-//  | Stack top       | [EBP-locals_size] = [ESP]  |      |
-//  +-----------------+----------------------------+      v
+std::string current_section;
+std::string next_comment_;
+
+#define NEXT_COMMENT(args) do { std::ostringstream oss_; oss_<<args; if (!next_comment_.empty()) next_comment_ += "; "; next_comment_ += oss_.str(); } while (0)
+
+void emit_section_change(const std::string& s) {
+    assert(s == "code" || s == "data");
+    if (s != current_section) {
+        std::cout << "\tSECTION ." << s << "\n";
+        current_section = s;
+    }
+}
+
+void emit_extern_decl(const std::string& id) {
+    std::cout << "\tEXTERN " << id << "\n";
+}
+
+void emit_label(const std::string& l) {
+    std::cout << l << ":";
+    if (!next_comment_.empty()) {
+        std::cout << "\t\t; " << next_comment_;
+        next_comment_.clear();
+    }
+    std::cout << "\n";
+}
+
+template<typename... Args>
+void emit(const std::string& inst, Args&&... args) {
+    std::cout << "\t" << inst;
+    int n = 0;
+    auto output_one = [&](const auto& a) { std::cout << (n++ ? ", ": "\t") << a; };
+    (output_one(args), ...);
+    if (!next_comment_.empty()) {
+        std::cout << "\t\t; " << next_comment_;
+        next_comment_.clear();
+    }
+    std::cout << "\n";
+}
 
 const char* compare_cond(token_type op, bool unsigned_) {
     switch (op) {
@@ -320,725 +301,49 @@ const char* compare_cond(token_type op, bool unsigned_) {
     }
 }
 
-bool types_equal(const type_ptr& l, const type_ptr& r) {
-    if (l->base() != r->base()) return false;
-    const auto b = l->base();
-
-    if (l->ct() != r->ct()) {
-        return false;
-    }
-    if (is_arithmetic(b) || b == ctype::void_t || b == ctype::bool_t) {
-        return true;
-    } else if (b == ctype::pointer_t) {
-        return types_equal(l->pointer_val(), r->pointer_val());
-    } else if (b == ctype::struct_t) {
-        return &l->struct_val() == &r->struct_val();
-    } else if (b == ctype::union_t) {
-        return &l->union_val() == &r->union_val();
-    } else if (b == ctype::function_t) {
-        const auto& lf = l->function_val();
-        const auto& rf = r->function_val();
-        if (lf.variadic() ^ rf.variadic()) {
-            return false;
-        }
-        if (!types_equal(lf.ret_type() , rf.ret_type())) {
-            return false;
-        }
-        if (lf.params().size() != rf.params().size()) {
-            return false;
-        }
-        for (size_t i = 0, sz = lf.params().size(); i < sz; ++i) {
-            if (!types_equal(lf.params()[i].t(), rf.params()[i].t())) {
-                return false;
-            }
-        }
-        return true;
-    }
-    NOT_IMPLEMENTED(b << " " << *l <<  " " << *r);
+std::string reg_off_str(const std::string& reg, int offset) {
+    return "[" + reg + (offset < 0 ? "" : "+") + std::to_string(offset) + "]";
 }
 
-bool is_convertible(const type_ptr& target_type, const type_ptr& source_type) {
-    const auto bt = target_type->base();
-    const auto bs = source_type->base();
-    if (bt == ctype::bool_t) {
-        return bs == ctype::bool_t || bs == ctype::pointer_t || is_arithmetic(bs);
-    } else if (bs == ctype::bool_t) {
-        return is_arithmetic(bt);
-    } if (is_arithmetic(bt) && is_arithmetic(bs)) {
-        return true;
-    } else if (bt == ctype::pointer_t && bs == ctype::pointer_t) {
-        const auto pt = target_type->pointer_val();
-        const auto ps = source_type->pointer_val();
-        if (pt->ct() == (ctype::const_f|ctype::void_t) || pt->ct() == ctype::void_t || ps->ct() == ctype::void_t) {
-            return true;
-        }
-        return types_equal(pt, ps);
-    } else if (bt == ctype::pointer_t && bs == ctype::int_t) {
-        // Eww, 0 -> null pointer
-        return true;
-    }
-    return false;
+std::string rbp_str(int offset) {
+    return reg_off_str("RBP", offset);
 }
 
-// Namespces: Labels, tags, struction/union members, other
-class symbol_info {
-public:
-    explicit symbol_info(const std::string& id) : id_{id} {}
+std::string name_mangle(const std::string& id) { return id; }
 
-    const std::string& id() const { return id_; }
-    const std::shared_ptr<const type>& t() const { return type_; }
-    void* value() { return value_; }
-
-    void set_type(const std::shared_ptr<const type>& type) {
-        if (type_) {
-            if (!types_equal(type_, type)) {
-                NOT_IMPLEMENTED(id_ << " already declared as " << *type_ << " redeclared as " << *type);
-            }
-            return;
-        }
-        type_ = type;
-    }
-
-    void set_value(void* val) {
-        assert(val);
-        if (value_) {
-            NOT_IMPLEMENTED(id_ << " already defined");
-        }
-        value_ = val;
-    }
-
-    void set_use_as_label() {
-        label_flags_ |= 1;
-    }
-    void set_defined_as_label() {
-        if (label_flags_ & 2) {
-            NOT_IMPLEMENTED("Multiple definitions of label " << id_);
-        }
-        label_flags_ |= 2;
-    }
-
-private:
-    std::string id_;
-    std::shared_ptr<const type> type_;
-    void* value_ = nullptr;
-    int label_flags_ = 0;
-};
-
-class symbol_table {
-public:
-    explicit symbol_table() {}
-
-    template<typename... Args>
-    symbol_info* add_symbol(const std::string& id, Args&&... args) {
-        assert(!id.empty());
-        assert(!lookup(id));
-        symbols_.push_back(std::make_unique<symbol_info>(id, std::forward<Args>(args)...));
-        return symbols_.back().get();
-    }
-
-    symbol_info* lookup(const std::string_view id) {
-        auto it = std::find_if(symbols_.begin(), symbols_.end(), [&id](const auto& s) { return s->id() == id; });
-        return it != symbols_.end() ? it->get() : nullptr;
-    }
-
-private:
-    std::vector<std::unique_ptr<symbol_info>> symbols_;
-};
-
-class scope_info {
-public:
-    explicit scope_info(scope_info*& prev, symbol_info* func_sym = nullptr) : prev_{prev}, prev_val_{prev}, func_sym_{func_sym} {
-        prev = this;
-    }
-    ~scope_info() {
-        assert(prev_ == this);
-        prev_ = prev_val_;
-    }
-
-    scope_info(const scope_info&) = delete;
-    scope_info& operator=(const scope_info&) = delete;
-
-    scope_info& global_scope() {
-        return prev_ ? prev_->global_scope() : *this;
-    }
-
-    scope_info& function_scope() {
-        if (func_sym_) {
-            return *this;
-        } else if (prev_val_) {
-            return prev_val_->function_scope();
-        } else {
-            NOT_IMPLEMENTED("called outside function");
-        }
-    }
-
-    symbol_info& current_function() {
-        return *function_scope().func_sym_;
-    }
-
-    template<typename... Args>
-    symbol_info* add_symbol(Args&&... args) {
-        return syms_.add_symbol(std::forward<Args>(args)...);
-    }
-
-    symbol_info* local_lookup(const std::string_view id) {
-        return syms_.lookup(id);
-    }
-
-    symbol_info* get_or_add(const std::string_view id) {
-        if (auto sym = syms_.lookup(id)) {
-            return sym;
-        }
-        return add_symbol(std::string(id));
-    }
-
-    std::pair<symbol_info*, scope_info*> global_lookup(const std::string_view id) {
-        if (auto sym = syms_.lookup(id)) {
-            return {sym, this};
-        } else if (prev_val_) {
-            return prev_val_->global_lookup(id);
-        } else {
-            return {nullptr, nullptr};
-        }
-    }
-
-private:
-    scope_info*& prev_;
-    scope_info* const prev_val_;
-    symbol_info* func_sym_;
-    symbol_table syms_;
-};
-
-class test_visitor {
-public:
-    explicit test_visitor() : global_scope_{current_scope_, false} {}
-
-    type_ptr handle(const expression& e) {
-        //std::cout << e << "\n";
-        auto t = visit(*this, e);
-        assert(t);
-        e.set_expression_type(t);
-        return t;
-    }
-
-    auto handle(const statement& s) {
-        return visit(*this, s);
-    }
-
-    //
-    // Expression
-    //
-    type_ptr operator()(const identifier_expression& e) {
-        auto sym = current_scope_->global_lookup(e.id()).first;
-        if (!sym || !sym->t()) {
-            NOT_IMPLEMENTED("Reference to undefined symbol " << e.id());
-        }
-        e.set_symbol(*sym);
-        return make_ref(remove_flags(sym->t(), ctype::storage_f));
-    }
-    type_ptr operator()(const const_int_expression& e) {
-        return std::make_shared<type>(e.val().type);
-    }
-    type_ptr operator()(const const_float_expression& e) { NOT_IMPLEMENTED(e); }
-    type_ptr operator()(const string_lit_expression& e) {
-        auto ai = std::make_shared<array_info>(t_const_char, e.text().size()+1);
-        return std::make_shared<type>(ctype::array_t, ai);
-    }
-    type_ptr operator()(const initializer_expression& e) { NOT_IMPLEMENTED(e); }
-    type_ptr operator()(const array_access_expression& e) {
-        auto ptr = decay(handle(e.a()));
-        if (ptr->base() != ctype::pointer_t) {
-            NOT_IMPLEMENTED("Not a pointer " << *ptr << " in " << e);
-        }
-        auto idx = to_rvalue(handle(e.i()));
-        if (!is_integral(idx->ct())) {
-            NOT_IMPLEMENTED("Invalid array index " << *idx << " in " << e);
-        }
-        return make_ref(ptr->pointer_val());
-    }
-    type_ptr operator()(const function_call_expression& e) {
-        auto ft = decay(handle(e.f()));
-        if (ft->base() != ctype::pointer_t || ft->pointer_val()->base() != ctype::function_t) {
-            NOT_IMPLEMENTED("Expected function in " << e << " got " << *ft);
-        }
-        const auto& fi = ft->pointer_val()->function_val();
-        std::vector<type_ptr> arg_types;
-        for (const auto& a: e.args()) {
-            arg_types.push_back(decay(handle(*a)));
-        }
-
-        if (arg_types.size() != fi.params().size() && (!fi.variadic() || arg_types.size() < fi.params().size())) {
-            NOT_IMPLEMENTED(e << " " << fi);
-        }
-
-        for (size_t i = 0; i < fi.params().size(); ++i) {
-            const auto& at = arg_types[i];
-            const auto& p = fi.params()[i];
-            if (!is_convertible(p.t(), at)) {
-                NOT_IMPLEMENTED("Invalid argument for " << p.id() << " in " << e << " got " << *at << " expected "<< *p.t());
-            }
-        }
-
-        return decay(fi.ret_type());
-    }
-    type_ptr operator()(const access_expression& e) {
-        assert(e.op() == token_type::arrow || e.op() == token_type::dot);
-        auto t = decay(handle(e.e()));
-        if (e.op() == token_type::arrow) {
-            if (t->base() != ctype::pointer_t) {
-                NOT_IMPLEMENTED("Expected pointer in " << e << " got " << *t);
-            }
-            t = t->pointer_val();
-        }
-        if (t->base() == ctype::struct_t || t->base() == ctype::union_t) {
-            if (!!(t->ct() & ctype::cvr_f)) {
-                NOT_IMPLEMENTED(*t);
-            }
-            for (const auto& m : struct_union_members(*t)) {
-                if (m.id() == e.id()) {
-                    return make_ref(m.t());
-                }
-            }
-            NOT_IMPLEMENTED(e.id() << " not found in " << *t);
-        }
-
-        NOT_IMPLEMENTED(e << " -> " << *t);
-    }
-    type_ptr operator()(const sizeof_expression&) {
-        return t_size_t;
-    }
-    type_ptr operator()(const prefix_expression& e) {
-        auto et = handle(e.e());
-        switch (e.op()) {
-        case token_type::and_:
-            if (et->base() != ctype::reference_t) {
-                NOT_IMPLEMENTED("Expected lvalue in " << e << " got " << *et);
-            }
-            return make_ptr(et->reference_val());
-        case token_type::star:
-            {
-                et = decay(et);
-                if (et->base() != ctype::pointer_t) {
-                    NOT_IMPLEMENTED("Expected pointer in " << e << " got " << *et);
-                }
-                if (!!(et->ct() & ctype::cvr_f)) {
-                    NOT_IMPLEMENTED(*et);
-                }
-                return make_ref(et->pointer_val());
-            }
-        case token_type::plus:
-        case token_type::minus:
-        case token_type::bnot:
-            {
-                et = decay(et);
-                if (!is_arithmetic(et->base())) {
-                    NOT_IMPLEMENTED("Invalid argument in " << e << ": " << *et);
-                }
-                return std::make_shared<type>(integral_promotion(et->ct()));
-            }
-        case token_type::not_:
-            if (!is_convertible(t_bool, decay(et))) {
-                NOT_IMPLEMENTED("Invalid argument in " << e << ": " << *et);
-            }
-            return t_bool;
-        case token_type::plusplus:
-        case token_type::minusminus:
-            {
-                if (et->base() != ctype::reference_t) {
-                    NOT_IMPLEMENTED("Expected lvalue in " << e << " got " << *et);
-                }
-                if (!is_arithmetic(et->reference_val()->base()) && et->reference_val()->base() != ctype::pointer_t) {
-                    NOT_IMPLEMENTED("Invalid type in " << e << " got " << *et->reference_val());
-                }
-                return et->reference_val();
-            }
-        default:
-            NOT_IMPLEMENTED(e.op() << " " << *et);
-        }
-    }
-    type_ptr operator()(const postfix_expression& e) {
-        const auto op = e.op();
-        auto et = handle(e.e());
-        if (op == token_type::plusplus || op == token_type::minusminus) {
-            if (et->base() != ctype::reference_t) {
-                NOT_IMPLEMENTED("Expected lvalue in " << e << " got " << *et);
-            }
-            return et;
-        }
-        NOT_IMPLEMENTED(e << " " << *et);
-    }
-    type_ptr operator()(const cast_expression& e) {
-        auto et = decay(handle(e.e()));
-        if ((et->base() == ctype::pointer_t && e.t()->base() == ctype::pointer_t) || is_convertible(e.t(), et)) {
-            return e.t();
-        }
-        NOT_IMPLEMENTED("cast " << *et << " to " << *e.t());
-    }
-    type_ptr operator()(const binary_expression& e) {
-        const auto op = e.op();
-        if (op == token_type::comma) {
-            NOT_IMPLEMENTED(e);
-        }
-        if (op == token_type::andand || op == token_type::oror) {
-            const auto lt = decay(handle(e.l()));
-            if (!is_convertible(t_bool, lt)) {
-                NOT_IMPLEMENTED("In " << e << " " << *lt << " is not convertible to bool");
-            }
-            const auto rt = decay(handle(e.r()));
-            if (!is_convertible(t_bool, rt)) {
-                NOT_IMPLEMENTED("In " << e << " " << *rt << " is not convertible to bool");
-            }
-            return t_bool;
-        }
-
-        auto lt = handle(e.l());
-        auto lvalt = decay(lt);
-        auto rt = decay(handle(e.r()));
-
-        if (is_assignment_op(op) && lt->base() != ctype::reference_t) {
-            NOT_IMPLEMENTED("Expected lvalue in " << e << " got " << *lt);
-        }
-
-        if (op == token_type::plus || op == token_type::minus) {
-            if (lvalt->base() == ctype::pointer_t) {
-                if (is_integral(rt->base())) {
-                    return lvalt;
-                } else if (op == token_type::minus && rt->base() == ctype::pointer_t) {
-                    NOT_IMPLEMENTED("Pointer - pointer in " << e);
-                }
-            }
-            if (is_integral(lvalt->base()) && rt->base() == ctype::pointer_t) {
-                return rt;
-            }
-        } else if (op == token_type::pluseq || op == token_type::minuseq) {
-            if (lvalt->base() == ctype::pointer_t && is_integral(rt->base())) {
-                return lt;
-            }
-        }
-
-        const auto ct = common_type(lvalt->ct(), rt->ct());
-        if (is_comparison_op(op)) {
-            return t_bool;
-        } else if (is_assignment_op(op)) {
-            if (lt->base() != ctype::reference_t) {
-                NOT_IMPLEMENTED("Expected lvalue in " << e << " got " << *lt);
-            }
-            return lt;
-        } else {
-            return std::make_shared<type>(ct);
-        }
-    }
-    type_ptr operator()(const conditional_expression& e) {
-        auto cond_t = decay(handle(e.cond()));
-        if (!is_convertible(t_bool, cond_t)) {
-            NOT_IMPLEMENTED("Condition in " << e << " is not convertible to bool");
-        }
-        auto lt = decay(handle(e.l()));
-        auto rt = decay(handle(e.r()));
-        auto ct = common_type(lt->ct(), rt->ct());
-        if (lt->ct() == ct) {
-            return lt;
-        }
-        return std::make_shared<type>(common_type(lt->ct(), rt->ct()));
-    }
-    type_ptr operator()(const expression& e) { NOT_IMPLEMENTED(e); }
-
-    //
-    // Statement
-    //
-    void operator()(const empty_statement&) {
-    }
-    void operator()(const declaration_statement& s) {
-        for (const auto& d: s.ds()) {
-            const auto& id = d->d().id();
-            auto dsym = current_scope_->get_or_add(id);
-            const auto& t = d->d().t();
-            if (t->base() == ctype::function_t) {
-                NOT_IMPLEMENTED(*d);
-            }
-            dsym->set_type(t);
-
-            if (d->has_init_val()) {
-                auto init_type = decay(handle(d->init_expr()));
-                if (!is_convertible(dsym->t(), init_type)) {
-                    NOT_IMPLEMENTED(*dsym->t() << " vs " << *init_type << " for " << id);
-                }
-            }
-
-            dsym->set_value((void*)1);
-        }
-    }
-    void operator()(const labeled_statement& s) {
-        if (!s.is_normal_label()) {
-            // TODO: Handle case/default labels
-            return;
-        }
-        const auto& id = s.label();
-        auto& fs = current_scope_->function_scope();
-        auto lsym = fs.get_or_add(id);
-        lsym->set_defined_as_label();
-        
-    }
-    void operator()(const compound_statement& s) {
-        scope_info scope{current_scope_};
-        for (const auto& s2: s.ss()) {
-            handle(*s2);
-        }
-    }
-    void operator()(const expression_statement& s) {
-        (void)handle(s.e());
-    }
-    void operator()(const if_statement& s) {
-        (void)handle(s.cond());
-        {
-            scope_info scope{current_scope_};
-            handle(s.if_s());
-        }
-        if (s.else_s()) {
-            scope_info scope{current_scope_};
-            handle(*s.else_s());
-        }
-    }
-    void operator()(const switch_statement& s) {
-        (void)handle(s.e());
-        scope_info scope{current_scope_};
-        handle(s.s());
-    }
-    void operator()(const while_statement& s) {
-        (void)handle(s.cond());
-        scope_info scope{current_scope_};
-        handle(s.s());
-    }
-    void operator()(const do_statement& s) { NOT_IMPLEMENTED(s); }
-    void operator()(const for_statement& s) {
-        scope_info scope{current_scope_};
-        handle(s.init());
-        if (s.cond()) (void)handle(*s.cond());
-        if (s.iter()) (void)handle(*s.iter());
-        handle(s.body());
-    }
-    void operator()(const goto_statement& s) {
-        auto lsym = current_scope_->function_scope().get_or_add(s.target());
-        lsym->set_use_as_label();
-    }
-    void operator()(const continue_statement&) { }
-    void operator()(const break_statement&) { }
-    void operator()(const return_statement& s) {
-        auto ret_type = decay(current_scope_->current_function().t()->function_val().ret_type());
-        if (!s.e()) {
-            if (ret_type->ct() != ctype::void_t) {
-                NOT_IMPLEMENTED("Missing return value in " << s << " expecting " << *ret_type);
-            }
-            return;
-        }
-        auto et = decay(handle(*s.e()));
-        if (!is_convertible(ret_type, et)) {
-            NOT_IMPLEMENTED("Invalid return type in " << s << " " << *et << " expecting " << *ret_type);
-        }
-    }
-    void operator()(const statement& s) { NOT_IMPLEMENTED(s); }
-
-    void do_function_decl(symbol_info& sym, const compound_statement& ss) {
-        assert(sym.t() && sym.t()->base() == ctype::function_t);
-        // TODO: Preserve scope?
-        scope_info func_scope{current_scope_, &sym};
-        sym.set_value((void*)1);
-        auto& fi = sym.t()->function_val();
-        if (fi.variadic()) {
-            NOT_IMPLEMENTED(sym.id() << " " << *sym.t());
-        }
-        for (const auto& a: fi.params()) {
-            if (a.t()->ct() == ctype::void_t) {
-                NOT_IMPLEMENTED(*a.t());
-            }
-            auto asym = func_scope.add_symbol(a.id());
-            asym->set_type(a.t());
-            asym->set_value((void*)1);
-        }
-        // Don't use `handle(ss)` to avoid scope from compund statement
-        for (const auto& s2: ss.ss()) {
-            handle(*s2);
-        }
-    }
-
-    void do_top_level_decl(const init_decl& decl_and_val) {
-        const auto& d = decl_and_val.d();
-
-        auto sym = global_scope_.get_or_add(d.id());
-        sym->set_type(d.t());
-        if (decl_and_val.has_init_val()) {
-            if (d.t()->base() == ctype::function_t) {
-                try {
-                    do_function_decl(*sym, decl_and_val.body());
-                } catch (...) {
-                    std::cerr << "Error while processing " << d << "\n";
-                    throw;
-                }
-            } else {
-                sym->set_value((void*)1);
-                std::cout << "TODO: Initialize global " << d << "\n";
-            }
-        }
-    }
-private:
-    scope_info* current_scope_ = nullptr;
-    scope_info global_scope_;
-
-    const type_ptr t_bool       = std::make_shared<type>(ctype::bool_t);
-    const type_ptr t_int        = std::make_shared<type>(ctype::int_t);
-    const type_ptr t_const_char = std::make_shared<type>(ctype::const_f | ctype::plain_char_t);
-    const type_ptr t_size_t     = std::make_shared<type>(ctype::unsigned_f | ctype::long_long_t);
-};
-
-#endif
-
-} // namespace mcc
-
-class empty_visitor {
-public:
-    explicit empty_visitor() {}
-
-    auto handle(const expression& e) {
-        return visit(*this, e);
-    }
-
-    auto handle(const statement& s) {
-        return visit(*this, s);
-    }
-
-    void handle(const init_decl& id) {
-        const auto& d = id.d();
-        if (id.has_init_val() && d.t()->base() == ctype::function_t) {
-            std::cout << "TODO: Handle " << d << "\n";
-            handle(id.body());
-        } else {
-            // TODO: Handle variables and extern definitions
-        }
-    }
-
-    //
-    // Expression
-    //
-    void operator()(const identifier_expression& e) {
-        NOT_IMPLEMENTED(e);
-    }
-    void operator()(const const_int_expression& e) {
-        NOT_IMPLEMENTED(e);
-    }
-    void operator()(const const_float_expression& e) {
-        NOT_IMPLEMENTED(e);
-    }
-    void operator()(const string_lit_expression& e) {
-        NOT_IMPLEMENTED(e);
-    }
-    void operator()(const initializer_expression& e) {
-        NOT_IMPLEMENTED(e);
-    }
-    void operator()(const array_access_expression& e) {
-        NOT_IMPLEMENTED(e);
-    }
-    void operator()(const function_call_expression& e) {
-        NOT_IMPLEMENTED(e);
-    }
-    void operator()(const access_expression& e) {
-        NOT_IMPLEMENTED(e);
-    }
-    void operator()(const sizeof_expression& e) {
-        NOT_IMPLEMENTED(e);
-    }
-    void operator()(const prefix_expression& e) {
-        NOT_IMPLEMENTED(e);
-    }
-    void operator()(const postfix_expression& e) {
-        NOT_IMPLEMENTED(e);
-    }
-    void operator()(const cast_expression& e) {
-        NOT_IMPLEMENTED(e);
-    }
-    void operator()(const binary_expression& e) {
-        NOT_IMPLEMENTED(e);
-    }
-    void operator()(const conditional_expression& e) {
-        NOT_IMPLEMENTED(e);
-    }
-
-    //
-    // Statement
-    //
-    void operator()(const empty_statement& s) {
-        NOT_IMPLEMENTED(s);
-    }
-    void operator()(const declaration_statement& s) {
-        NOT_IMPLEMENTED(s);
-    }
-    void operator()(const labeled_statement& s) {
-        NOT_IMPLEMENTED(s);
-    }
-    void operator()(const compound_statement& s) {
-        NOT_IMPLEMENTED(s);
-    }
-    void operator()(const expression_statement& s) {
-        NOT_IMPLEMENTED(s);
-    }
-    void operator()(const if_statement& s) {
-        NOT_IMPLEMENTED(s);
-    }
-    void operator()(const switch_statement& s) {
-        NOT_IMPLEMENTED(s);
-    }
-    void operator()(const while_statement& s) {
-        NOT_IMPLEMENTED(s);
-    }
-    void operator()(const do_statement& s) {
-        NOT_IMPLEMENTED(s);
-    }
-    void operator()(const for_statement& s) {
-        NOT_IMPLEMENTED(s);
-    }
-    void operator()(const goto_statement& s) {
-        NOT_IMPLEMENTED(s);
-    }
-    void operator()(const continue_statement& s) {
-        NOT_IMPLEMENTED(s);
-    }
-    void operator()(const break_statement& s) {
-        NOT_IMPLEMENTED(s);
-    }
-    void operator()(const return_statement& s) {
-        NOT_IMPLEMENTED(s);
-    }
-};
-
-const char* compare_cond(token_type op, bool unsigned_) {
-    switch (op) {
-    case token_type::lt:    return unsigned_ ? "B" : "L";
-    case token_type::lteq:  return unsigned_ ? "BE" : "LE";
-    case token_type::eqeq:  return "EQ";
-    case token_type::noteq: return "NE";
-    case token_type::gt:    return unsigned_ ? "A" : "G";
-    case token_type::gteq:  return unsigned_ ? "AE" : "GE";
-    default: NOT_IMPLEMENTED(op);
-    }
-}
-
-const char* type_size_name(ctype t) {
-    assert(is_integral(t));
-    switch (base_type(t)) {
-    case ctype::plain_char_t:
-    case ctype::char_t:
-        return "byte";
-    case ctype::short_t:
-        return "word";
+std::string op_size_str(ctype t) {
+    switch (t) {
     case ctype::int_t:
-    case ctype::long_t:
-        return "dword";
-    case ctype::long_long_t:
-        return "qword";
+        return "DWORD ";
     }
     NOT_IMPLEMENTED(t);
 }
 
-const char* bin_op_inst(token_type t) {
+enum r64_names {
+    RAX, RCX, RDX, RBX,
+    RSP, RBP, RSI, RDI,
+    R8,  R9,  R10, R11,
+    R12, R13, R14, R15
+};
+
+std::string reg_name_for_type(ctype t, r64_names r = RAX) {
+    assert(r == RAX || r == RDX);
+    switch (base_type(t)) {
+    case ctype::plain_char_t:   [[fallthrough]];
+    case ctype::char_t:         return r == RAX ? "AL"  : "DL";
+    case ctype::int_t:          return r == RAX ? "EAX" : "EDX";
+    case ctype::pointer_t:      [[fallthrough]];
+    case ctype::long_long_t:    return r == RAX ? "RAX" : "RDX";
+    }
+    NOT_IMPLEMENTED(t);
+}
+
+bool unsigned_arit(const type& t)  {
+    assert(t.base() <= ctype::pointer_t);
+    return t.base() == ctype::pointer_t || !!(t.ct() & ctype::unsigned_f);
+}
+
+std::string arit_op_name(token_type t) {
     switch (t) {
     case token_type::plus:  return "ADD";
     case token_type::minus: return "SUB";
@@ -1049,380 +354,492 @@ const char* bin_op_inst(token_type t) {
     NOT_IMPLEMENTED(t);
 }
 
-const char* const arg_reg_names[] = { "RCX", "RDX", "R8", "R9" };
-
-//   ......
-//   xxxxx8 arg 5            // RBP+0x38
-//   xxxxx0 arg 4            // RBP+0x30
-//   xxxxx8 arg 3 (home)     // RBP+0x28
-//   xxxxx0 arg 2 (home)     // RBP+0x20
-//   xxxxx8 arg 1 (home)     // RBP+0x18
-//   xxxxx0 arg 0 (home)     // RBP+0x10
-//   xxxxx8 Return address   // RBP+0x08
-//   xxxxx0 Saved RBP        // RBP+0x00
-//   xxxxx8 local 0          // RBP-0x08
-//   xxxxx0 local 1          // RBP-0x10
-//   ......
-
-class codegen_context {
-public:
-    explicit codegen_context() {
-    }
-
-    size_t function_prologue(const init_decl& id) {
-        const auto initial_size = active_syms_.size();
-
-        assert(id.has_init_val() && id.d().t()->base() == ctype::function_t);
-        //const auto& fi = id.d().t()->function_val();
-        const auto& func_scope = id.local_scope();
-
-        std::cout << "_" << id.d().id() << ":" << "\n";
-        std::cout << "\tPUSH\tRBP\n";
-        std::cout << "\tMOV\tRBP, RSP\n";
-
-        const auto& ss = scope_symbols(func_scope);
-        size_t rbp_offset = 0x10;
-        for (size_t i = 0; i < ss.size(); ++i) {
-            const auto& s = *ss[i];
-            const auto b = s.decl_type()->base();
-            if (is_integral(b) || b == ctype::pointer_t) {
-                const auto addr = "RBP+" +std::to_string(rbp_offset);
-                active_syms_.push_back(sym_info{&s, addr});
-                std::cout << "\t; " << s.id() << " = [" << addr << "]\n";
-                if (i < 4) {
-                    std::cout << "\tMOV\t[" << addr << "], " << arg_reg_names[i] << "\n";
-                }
-                rbp_offset += 0x08;
-            } else {
-                NOT_IMPLEMENTED(decl(s.decl_type(), s.id()));
-            }
-        }
-
-        const auto& func_scope_children = scope_children(func_scope);
-        assert(func_scope_children.size() == 1);
-        const auto locals_size = round_up(handle_locals(*func_scope_children[0], 0), 16);
-
-        std::cout << "\tSUB\tRSP, " << locals_size << "\n";
-
-        ret_label_ = make_label();
-
-        return initial_size;
-    }
-
-    void function_epilogue(uint64_t cookie) {
-        std::cout << ret_label_ << ":\n";
-        std::cout << "\tMOV\tRSP, RBP\n";
-        std::cout << "\tPOP\tRBP\n";
-        std::cout << "\tRET\n";
-        assert(cookie <= active_syms_.size());
-        active_syms_.erase(active_syms_.begin() + cookie, active_syms_.end());
-        ret_label_.clear();
-    }
-
-    std::string make_label() {
-        return "L" + std::to_string(num_labels_++);
-    }
-
-    std::string lookup(const symbol& s) const {
-        for (auto it = active_syms_.crbegin(), end = active_syms_.crend(); it != end; ++it) {
-            if (it->sym == &s) {
-                return it->addr;
-            }
-        }
-        if (s.decl_type()->base() == ctype::function_t) {
-            return s.id();
-        }
-        NOT_IMPLEMENTED("Lookup failed for " << decl(s.decl_type(), s.id()));
-    }
-
-    const std::string& ret_label() const {
-        assert(!ret_label_.empty());
-        return ret_label_;
-    }
-
-private:
-    struct sym_info {
-        const symbol* sym;
-        std::string   addr;
-    };
-    std::vector<sym_info> active_syms_;
-    size_t num_labels_ = 0;
-    std::string ret_label_;
-
-    size_t handle_locals(const scope& sc, size_t current_size) {
-        for (const auto& s: scope_symbols(sc)) {
-            if (!s->decl_type()) continue;
-            const auto size  = sizeof_type(*s->decl_type());
-            const auto align = alignof_type(*s->decl_type());
-            current_size = round_up(current_size + size, align);
-            active_syms_.push_back(sym_info{s.get(), "RBP-"+std::to_string(current_size)});
-        }
-        for (const auto& c: scope_children(sc)) {
-            current_size = handle_locals(*c, current_size);
-        }
-        return current_size;
-    }
-};
+const char* const arg_regs[4] = {"RCX","RDX","R8","R9"};
 
 class test_visitor {
 public:
     explicit test_visitor() {}
 
-    void lvalue_to_rvalue(const type_ptr& t, const std::string& reg) {
-        if (t->base() == ctype::reference_t) {
-            assert(is_integral(t->reference_val()->base()));
-            std::cout << "\tMOV\t" << reg << ", [" << reg << "]\n";
-        } else {
-            assert(is_integral(t->base()));
+    void do_all(const parse_result& pr) {
+        for (const auto& s : scope_symbols(pr.global_scope())) {
+            if (!s->definition()) {
+                add_extern(*s);
+            } else {
+                std::cout << "\tGLOBAL " << s->id() << "\n";
+            }
+        }
+
+
+        for (const auto& d: pr.decls()) {
+            const auto& t = d->d().t();
+            if (!!(t->ct() & ctype::typedef_f)) {
+                continue;
+            }
+            if (t->base() == ctype::function_t) {
+                if (d->has_init_val()) {
+                    handle_function(*d);
+                }
+            } else {
+                if (!!(t->ct() & ctype::extern_f)) {
+          //          add_extern(*d);
+                } else {
+                    NOT_IMPLEMENTED(*d);
+                }
+            }
         }
     }
 
-    auto handle(const expression& e) {
-        std::cout << "\t; " << e << "\n";
+    void handle(const expression& e) {
         return visit(*this, e);
     }
-
-    auto handle(const statement& s) {
-        return visit(*this, s);
-    }
-
-    void handle(const init_decl& id) {
-        if (!id.has_init_val()) {
-            return;
-        }
-        const auto& d = id.d();
-        if (d.t()->base() == ctype::function_t) {
-            const auto cookie = ctx_.function_prologue(id);
-            handle(id.body());
-            ctx_.function_epilogue(cookie);
-        } else {
-            std::cout << "TODO: Handle " << d << "\n";
-        }
-    }
-
-    void do_all(const parse_result& pr) {
-        for (auto& d: pr.decls()) {
-            handle(*d);
-        }
+    
+    void handle(const statement& s) {
+        visit(*this, s);
     }
 
     //
     // Expression
     //
     void operator()(const identifier_expression& e) {
-        std::cout << "\tLEA\tRAX, [" << ctx_.lookup(e.sym()) << "]\n";
+        const auto& si = find_sym(e.sym());
+        NEXT_COMMENT(e.sym().id());
+        if (!si.offset) {
+            emit("MOV", "RAX", name_mangle(si.sym->id()));
+        } else {
+            emit("LEA", "RAX", rbp_str(si.offset));
+        }
     }
     void operator()(const const_int_expression& e) {
-        std::cout << "\tMOV\tRAX, " << e.val() << "\n";
+        emit("MOV", "RAX", e.val().val);
     }
-    void operator()(const const_float_expression& e) {
-        if (1) NOT_IMPLEMENTED(e);
-        (void)e;
-    }
+    void operator()(const const_float_expression& e) { NOT_IMPLEMENTED(e); }
     void operator()(const string_lit_expression& e) {
-        const auto l = ctx_.make_label();
-        std::cout << "SECTION DATA\n";
-        std::cout << l << ": DB " << quoted(e.text()) << "\n";
-        std::cout << "SECTION CODE\n";
-        std::cout << "\tMOV\tRAX, " << l << "\n";
+        emit_section_change("data");
+        const auto l = make_label();
+        emit_label(l);
+        emit("db", quoted(e.text()));
+        emit_section_change("code");
+        emit("MOV", "RAX", l);
     }
     void operator()(const initializer_expression& e) {
-        if (1) NOT_IMPLEMENTED(e);
-        for (const auto& e2: e.es()) {
-            handle(*e2);
+        if (e.et()->base() != ctype::reference_t || e.et()->reference_val()->base() != ctype::array_t) {
+            NOT_IMPLEMENTED(e << " : " << *e.et());
         }
+        const auto elem_t = e.et()->reference_val()->array_val().t();
+        if (!is_integral(elem_t->base()) || sizeof_type(*elem_t) != 1) {
+            NOT_IMPLEMENTED(e << " : " << *e.et() << " elem type: " << *elem_t);
+        }
+
+        std::ostringstream oss;
+        for (const auto& i: e.es()) {
+            if (!oss.str().empty()) oss << ", ";
+            oss << const_int_eval(*i);
+        }
+
+        emit_section_change("data");
+        const auto l = make_label();
+        emit_label(l);
+        emit("db", oss.str());
+        emit_section_change("code");
+        emit("MOV", "RAX", l);
     }
     void operator()(const array_access_expression& e) {
-        handle(e.a());
-        std::cout << "\tPUSH\tRAX\n";
-        handle(e.i());
-        std::cout << "\tPOP\tRCX\n";
-        std::cout << "\tMOV\tRAX, " << type_size_name(to_rvalue(e.et())->ct()) << " [RAX+RCX]\n"; 
+        handle_and_convert(e.a(), decay(e.a().et()));
+        emit("PUSH", "RAX");
+        handle_and_convert(e.i(), std::make_shared<type>(ctype::long_long_t));
+        emit("POP", "RCX");
+        emit("LEA", "RAX", "[RAX+RCX]");
     }
     void operator()(const function_call_expression& e) {
-        const auto ns = round_up(std::max(4ULL, e.args().size()) * 8, 16);
-        std::cout << "\tSUB\tRSP, " << ns << "\n";
-        size_t offset = 0;
-        for (auto it = e.args().crbegin(), end = e.args().crend(); it != end; ++it, offset += 8) {
-            handle(**it);
-            std::cout << "\tMOV\t[RSP+" << offset << "], RAX\n";
+        struct stack_arg {
+            type_ptr t;
+            int      offset;
+        };
+        std::vector<stack_arg> args;
+
+        size_t stack_adj_size = 0;
+        const auto& ptypes = to_rvalue(e.f().et())->function_val().params();
+        assert(e.args().size() == ptypes.size() || to_rvalue(e.f().et())->function_val().variadic());
+        for (size_t i = 0, sz = e.args().size(); i < sz; ++i) {
+            const auto& aa = *e.args()[i];
+            type_ptr t = decay(aa.et());
+            if (!is_integral(t->base()) && t->base() != ctype::pointer_t) {
+                NOT_IMPLEMENTED(aa << ":" << *t);
+            }
+            if (i < ptypes.size()) {
+                t = ptypes[i].t();
+            } else {
+                t = var_arg_type(t);
+            }
+            const auto align = alignof_type(*t);
+            stack_adj_size = round_up(stack_adj_size, align);
+            args.push_back(stack_arg{t, static_cast<int>(stack_adj_size)});
+            stack_adj_size = stack_adj_size + round_up(sizeof_type(*t), 8);
         }
-        for (size_t i = 0; i < std::min(4ULL, e.args().size()); ++i) {
-            std::cout << "\tMOV\t" << arg_reg_names[i] << ", [RSP+" << i*4 << "]\n";
+        stack_adj_size = round_up(std::max(32ULL, stack_adj_size), 16);
+        emit("SUB", "RSP", stack_adj_size);
+
+        for (size_t i = e.args().size(); i--; ) {
+            handle_and_convert(*e.args()[i], args[i].t);
+            emit("MOV", reg_off_str("RSP", args[i].offset), "RAX");
         }
+
         handle(e.f());
-        std::cout << "\tCALL\t[RAX]\n";
-        std::cout << "\tADD\tRSP, " << ns << "\n";
-    }
-    void operator()(const access_expression& e) {
-        if (1) NOT_IMPLEMENTED(e);
-        handle(e.e());
-    }
-    void operator()(const sizeof_expression& e) {
-        if (1) NOT_IMPLEMENTED(e);
-        if (!e.arg_is_type()) {
-            handle(e.e());
+        if(!e.args().empty()){
+            for (size_t i = 0; i < std::min(4ULL, e.args().size()); ++i) {
+                emit("MOV", arg_regs[i], reg_off_str("RSP", args[i].offset));
+            }
         }
+        emit("CALL", "RAX");
+        emit("ADD", "RSP", stack_adj_size);        
     }
+    void operator()(const access_expression& e) { NOT_IMPLEMENTED(e); }
+    void operator()(const sizeof_expression& e) { NOT_IMPLEMENTED(e); }
     void operator()(const prefix_expression& e) {
+        const auto op = e.op();
         handle(e.e());
-        if (e.op() == token_type::star) {
+        if (op == token_type::plusplus || op == token_type::minusminus) {
+            handle_incr_decr(op, e.e().et()->reference_val(), true);
             return;
-        } else if (e.op() == token_type::plusplus) {
-            lvalue_to_rvalue(e.et(), "RAX");
-            assert(is_integral(to_rvalue(e.et())->base()));
-            std::cout << "\tINC\tRAX\n";
-        } else {
-            NOT_IMPLEMENTED(e << ":" << *e.et());
         }
+        if (op == token_type::star) {
+            return;
+        }
+        NOT_IMPLEMENTED(e << " : " << *e.et());
     }
     void operator()(const postfix_expression& e) {
+        const auto op = e.op();
         handle(e.e());
-        if (e.op() == token_type::minusminus || e.op() == token_type::plusplus) {
-            const auto t = to_rvalue(e.e().et());
-            const char* szname = "qword";
-            size_t count = 1;
-            if (is_integral(t->base())) {
-                szname = type_size_name(t->base());
-            } else {
-                assert(t->base() == ctype::pointer_t);
-                count = sizeof_type(*t->pointer_val());
-            }
-            std::cout << "\t" << (e.op() == token_type::plusplus ? "ADD":  "SUB") << "\t" << szname << " [RAX], " << count << "\n";
-        } else {
-            NOT_IMPLEMENTED(e.op() << " -> " << *e.et());
+        if (op == token_type::plusplus || op == token_type::minusminus) {
+            handle_incr_decr(op, e.e().et()->reference_val(), false);
+            return;
         }
+        NOT_IMPLEMENTED(e << " : " << *e.et());
     }
-    void operator()(const cast_expression& e) {
-        if (1) NOT_IMPLEMENTED(e);
-        handle(e.e());
-    }
+    void operator()(const cast_expression& e) { NOT_IMPLEMENTED(e); }
     void operator()(const binary_expression& e) {
-        handle(e.r());
-        lvalue_to_rvalue(e.r().et(), "RAX");
-        std::cout << "\tPUSH\tRAX\n";
-        handle(e.l());
-        std::cout << "\tPOP\tRCX\n";
-        // RAX=op1, RCX=op2
-        if (is_comparison_op(e.op())) {
-            lvalue_to_rvalue(e.l().et(), "RAX");
-            std::cout << "\tCMP\tRAX, RCX\n";
-            // FIXME: Use deduced common_type
-            std::cout << "\tSET" << compare_cond(e.op(), !!(e.common_t()->ct() & ctype::unsigned_f)) << "\tAL\n";
-        } else if (is_assignment_op(e.op())) {
-            const char* inst_name = e.op() == token_type::eq ? "MOV" : bin_op_inst(without_assignment(e.op()));
-            std::cout << "\t" << inst_name << "\t[RAX], RCX\n";
-        } else {
-            lvalue_to_rvalue(e.l().et(), "RAX");
-            std::cout << "\t" << bin_op_inst(e.op()) << "\tRAX, RCX\n";
+        const auto op = e.op();
+
+        if (op == token_type::comma || op == token_type::andand || op == token_type::oror) {
+            NOT_IMPLEMENTED(e);
         }
+        const auto& ct = e.common_t();
+
+        if (is_comparison_op(op)) {
+            if (!is_integral(ct->base())) NOT_IMPLEMENTED(e);
+            handle_and_convert(e.r(), ct);
+            emit("PUSH", "RAX");
+            handle_and_convert(e.l(), ct);
+            emit("POP", "RDX");
+            handle_compare(op, ct);
+            return;
+        }
+
+        if (is_assignment_op(op)) {
+            if (!is_integral(ct->base())) NOT_IMPLEMENTED(e);
+
+            handle_and_convert(e.r(), ct);
+            emit("PUSH", "RAX");
+            handle(e.l());
+            emit("MOV", "RCX", "RAX");
+
+            if (op == token_type::eq) {
+                emit("POP", "RAX");
+            } else {
+                handle_load(ct);
+                emit("POP", "RDX");
+                handle_arit_op(without_assignment(op), ct);
+            }
+            handle_store("[RCX]", e.l().et()->reference_val());
+            return;
+        }
+
+        handle_and_convert(e.r(), ct);
+        emit("PUSH", "RAX");
+        handle_and_convert(e.l(), ct);
+        emit("POP", "RDX");
+        handle_arit_op(op, ct);
     }
-    void operator()(const conditional_expression& e) {
-        if (1) NOT_IMPLEMENTED(e);
-        handle(e.cond());
-        handle(e.l());
-        handle(e.r());
-    }
+
+    void operator()(const conditional_expression& e) { NOT_IMPLEMENTED(e); }
 
     //
     // Statement
     //
-    void operator()(const empty_statement&) {
-    }
+    void operator()(const empty_statement& s) { NOT_IMPLEMENTED(s); }
     void operator()(const declaration_statement& s) {
         for (const auto& ds: s.ds()) {
-            if (ds->has_init_val()) {
-                assert(ds->d().t()->base() != ctype::function_t);
-                auto addr = ctx_.lookup(ds->sym());
-                std::cout << "\t; " << ds->d().id() << " = [" << addr << "]\n";
-                handle(ds->init_expr());
-                std::cout << "\tMOV\t[" << addr << "], RAX\n";
+            if (!ds->has_init_val()) {
+                continue;
             }
+            NEXT_COMMENT(ds->sym().id());
+            const auto& si = find_sym(ds->sym());
+            const auto& t = si.sym->decl_type();
+            handle_and_convert(ds->init_expr(), t);
+            handle_store(rbp_str(si.offset), decay(t));
         }
     }
-    void operator()(const labeled_statement& s) {
-        if (1) NOT_IMPLEMENTED(s);
-        handle(s.s());
-    }
+    void operator()(const labeled_statement& s) { NOT_IMPLEMENTED(s); }
     void operator()(const compound_statement& s) {
-        for (const auto& s2 : s.ss()) {
+        for (const auto& s2: s.ss()) {
             handle(*s2);
         }
     }
     void operator()(const expression_statement& s) {
         handle(s.e());
     }
-    void operator()(const if_statement& s) {
-        if (1) NOT_IMPLEMENTED(s);
-        handle(s.cond());
-        handle(s.if_s());
-        if (s.else_s()) {
-            handle(*s.else_s());
-        }
-    }
-    void operator()(const switch_statement& s) {
-        if (1) NOT_IMPLEMENTED(s);
-        handle(s.e());
-        handle(s.s());
-    }
+    void operator()(const if_statement& s) { NOT_IMPLEMENTED(s); }
+    void operator()(const switch_statement& s) { NOT_IMPLEMENTED(s); }
     void operator()(const while_statement& s) {
-        const auto l_start = ctx_.make_label();
-        const auto l_end   = ctx_.make_label();
-        std::cout << l_start << ":\n";
+        const auto l_start = make_label();
+        const auto l_end   = make_label();
+        NEXT_COMMENT("while cond");
+        emit_label(l_start);
         handle(s.cond());
-        std::cout << "\tTEST\tAL,AL\n";
-        std::cout << "\tJZ\t" << l_end << "\n";
+        emit("TEST", "AL", "AL");
+        emit("JZ", l_end);
+        NEXT_COMMENT("while body");
         handle(s.s());
-        std::cout << "\tJMP\t" << l_start << "\n";
-        std::cout << l_end << ":\n";
+        emit("JMP", l_start);
+        NEXT_COMMENT("while end");
+        emit_label(l_end);
     }
-    void operator()(const do_statement& s) {
-        if (1) NOT_IMPLEMENTED(s);
-        handle(s.s());
-        handle(s.cond());
-    }
+    void operator()(const do_statement& s) { NOT_IMPLEMENTED(s); }
     void operator()(const for_statement& s) {
         handle(s.init());
-        auto l_cond = ctx_.make_label();
-        auto l_iter = ctx_.make_label();
-        auto l_end = ctx_.make_label();
-        std::cout << l_cond << ":\n";
+        const auto l_start = make_label();
+        const auto l_end   = make_label();
+        NEXT_COMMENT("for cond");
+        emit_label(l_start);
         if (s.cond()) {
             handle(*s.cond());
-            std::cout << "\tTEST\tAL,AL\n";
-            std::cout << "\tJZ\t" << l_end << "\n";
+            emit("TEST", "AL", "AL");
+            emit("JZ", l_end);
         }
+        NEXT_COMMENT("for body");
         handle(s.body());
-        std::cout << l_iter << ":\n";
-        if (s.iter()) handle(*s.iter());
-        std::cout << "\tJMP\t" << l_cond << "\n";
-        std::cout << l_end << ":\n";
-    }
-    void operator()(const goto_statement& s) {
-        if (1) NOT_IMPLEMENTED(s);
-        (void)s;
-    }
-    void operator()(const continue_statement& s) {
-        if (1) NOT_IMPLEMENTED(s);
-        (void)s;
-    }
-    void operator()(const break_statement& s) {
-        if (1) NOT_IMPLEMENTED(s);
-        (void)s;
-    }
-    void operator()(const return_statement& s) {
-        if (s.e()) {
-            handle(*s.e());
+        if (s.iter()) {
+            NEXT_COMMENT("for iter");
+            handle(*s.iter());
         }
-        std::cout << "\tJMP\t" << ctx_.ret_label() << "\n";
+        emit("JMP", l_start);
+        NEXT_COMMENT("for end");
+        emit_label(l_end);
+    }
+    void operator()(const goto_statement& s) { NOT_IMPLEMENTED(s); }
+    void operator()(const continue_statement& s) { NOT_IMPLEMENTED(s); }
+    void operator()(const break_statement& s) { NOT_IMPLEMENTED(s); }
+    void operator()(const return_statement& s) {
+        assert(!end_label_.empty());
+        if (s.e()) {
+            handle_and_convert(*s.e(), func_ret_type_);
+        }
+        emit("JMP", end_label_);
     }
 
 private:
-    codegen_context ctx_;
+    struct sym_info {
+        const symbol* sym;
+        int offset;
+    };
+    std::vector<sym_info> syms_;
+    int next_label_ = 0;
+    std::string end_label_;
+    type_ptr func_ret_type_;
+
+    void add_sym(const symbol& sym, int offset) {
+        assert(!try_find_sym(sym));
+        assert(offset);
+        syms_.push_back(sym_info{&sym, offset});
+    }
+
+    void add_extern(const symbol& sym) {
+        assert(!try_find_sym(sym));
+        emit_extern_decl(sym.id());
+        syms_.push_back(sym_info{&sym, 0});
+    }
+
+    std::string make_label() { return "L" + std::to_string(next_label_++); }
+
+    const sym_info* try_find_sym(const symbol& s) const {
+        auto it = std::find_if(syms_.crbegin(), syms_.crend(), [&s](const auto& si) { return si.sym == &s; });
+        if (it == syms_.crend()) {
+            return nullptr;
+        }
+        return &*it;
+    }
+
+    const sym_info& find_sym(const symbol& s) const {
+        auto sym = try_find_sym(s);
+        if (!sym) {
+            NOT_IMPLEMENTED("Unknown symbol " << s.id());
+        }
+        return *sym;
+    }
+
+   size_t handle_locals(const scope& sc, size_t current_size) {
+        for (const auto& s: scope_symbols(sc)) {
+            if (!s->decl_type()) continue;
+            const auto size  = sizeof_type(*s->decl_type());
+            const auto align = alignof_type(*s->decl_type());
+            current_size = round_up(current_size + size, align);
+            add_sym(*s, -static_cast<int>(current_size));
+        }
+        for (const auto& c: scope_children(sc)) {
+            current_size = handle_locals(*c, current_size);
+        }
+        return current_size;
+    }
+
+   void handle_function(const init_decl& d)  {
+       syms_.push_back(sym_info{&d.sym(), 0});
+
+        emit_section_change("code");
+        emit_label(name_mangle(d.d().id()));
+        emit("PUSH", "RBP");
+        emit("MOV", "RBP", "RSP");
+
+        int offset = 0x10;
+        int arg_cnt = 0;
+        for (const auto& s: scope_symbols(d.local_scope())) {
+            const auto& t = s->decl_type();
+            const auto align = alignof_type(*t);
+            const auto size  = sizeof_type(*t);
+            offset = static_cast<int>(round_up(offset, align));
+            add_sym(*s, offset);
+
+            if (arg_cnt < 4) {
+                if (!is_integral(t->base()) && t->base() != ctype::pointer_t) NOT_IMPLEMENTED(decl(t, s->id()));
+                NEXT_COMMENT(s->id());
+                emit("MOV", rbp_str(offset), arg_regs[arg_cnt]);
+            }
+
+            offset += static_cast<int>(round_up(size, 8));
+            ++arg_cnt;
+        }
+        const auto& ls = scope_children(d.local_scope());
+        assert(ls.size() == 1);
+        const auto local_size = handle_locals(*ls[0], 16);
+        emit("SUB","RSP", round_up(local_size, 16));
+        assert(end_label_.empty());
+        end_label_ = make_label();
+        func_ret_type_ = d.d().t()->function_val().ret_type();
+        handle(d.body());
+        assert(!end_label_.empty());
+        emit_label(end_label_);
+        end_label_.clear();
+        func_ret_type_.reset();
+        emit("MOV", "RSP", "RBP");
+        emit("POP", "RBP");
+        emit("RET");                
+    }
+
+   void handle_conversion(const type_ptr& dst, const type_ptr& src) {
+        if (types_equal(*dst, *src)) {
+            return;
+        }
+        assert(dst->base() != ctype::reference_t);
+        if (src->base() == ctype::reference_t) {
+            const auto& rt = src->reference_val();
+            if (rt->base() == ctype::array_t) {
+                if (dst->base() != ctype::array_t && dst->base() != ctype::pointer_t) {
+                    NOT_IMPLEMENTED("Conversion from " << *rt << " (" << *src << ") to " << *dst);
+                }
+            } else {
+                handle_load(rt);
+                handle_conversion(dst, rt);
+            }
+            return;
+        }
+        NEXT_COMMENT("Conversion from " << *src << " to " << *dst);
+
+        if (is_arithmetic(src->base()) && is_arithmetic(dst->base())) {
+            if (src->base() < dst->base()) {
+                emit(unsigned_arit(*src) ? "MOVZX" : "MOVSX", "RAX", reg_name_for_type(src->ct()));
+            }
+            return;
+        }
+        
+
+        NOT_IMPLEMENTED("conversion from " << *src << " to " << *dst);
+   }
+
+    void handle_and_convert(const expression& e, const type_ptr& t) {
+        handle(e);
+        handle_conversion(t, e.et());
+    }
+
+    void handle_load_store(const std::string& addr, const type_ptr& t, bool is_store) {
+        std::string r = reg_name_for_type(t->base());
+        if (is_store) {
+            NEXT_COMMENT("Store as " << *t);
+            emit("MOV", addr, r);
+        } else {
+            NEXT_COMMENT("Load as " << *t);
+            emit("MOV", r, addr);
+        }
+    }
+    
+    void handle_store(const std::string& addr, const type_ptr& t) {
+        handle_load_store(addr, t, true);
+    }
+
+    void handle_load(const std::string& addr, const type_ptr& t) {
+        handle_load_store(addr, t, false);
+    }
+
+    void handle_load(const type_ptr& t) {
+        handle_load("[RAX]", t);
+    }
+
+    // Assumes ops in RAX,RDX (for int/pointer values)
+    void handle_compare(token_type op, const type_ptr& t) {
+        const auto b = t->base();
+        if (!is_integral(b)) {
+            NOT_IMPLEMENTED(op << " " << *t);
+        }
+        emit("CMP", reg_name_for_type(b, RAX), reg_name_for_type(b, RDX));
+        emit("SET" + std::string(compare_cond(op, unsigned_arit(*t))), "AL");
+    }
+    // Assumes ops in RAX,RDX (for int/pointer values)
+    void handle_arit_op(token_type op, const type_ptr& t) {
+        const auto b = t->base();
+        if (!is_integral(b)) {
+            NOT_IMPLEMENTED(op << " " << *t);
+        }
+        emit(arit_op_name(op), reg_name_for_type(b, RAX), reg_name_for_type(b, RDX));
+    }
+
+    void handle_incr_decr(token_type op, const type_ptr& t, bool is_prefix) {
+        assert(op == token_type::plusplus || op == token_type::minusminus);
+        const auto plus = op == token_type::plusplus;
+
+        if (is_integral(t->base()) || t->base() == ctype::pointer_t) {
+            auto e = [&]() {
+                if (t->base() == ctype::pointer_t) {
+                    emit(plus ? "ADD" : "SUB", "qword [RAX]", sizeof_type(*t->pointer_val()));
+                } else {
+                    emit(plus ? "INC" : "DEC", op_size_str(t->base()) + "[RAX]");
+                }
+            };
+            if (is_prefix) {
+                e();
+                handle_load(t);
+            } else {
+                emit("PUSH", "RAX");
+                handle_load(t);
+                emit("MOV", "RCX", "RAX");
+                emit("POP", "RAX");
+                e();
+                emit("MOV", "RAX", "RCX");
+            }
+            return;
+        }
+        NOT_IMPLEMENTED(op << " " << *t << " " << is_prefix);
+    }
 };
 
 void process_one(source_manager& sm, const std::string& filename) {
-    std::cout << filename << "\n";
     test_visitor vis{};
     vis.do_all(parse(sm, sm.load(filename)));
 } 

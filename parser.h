@@ -675,6 +675,7 @@ private:
 
 parse_result parse(source_manager& sm, const source_file& source);
 
+const_int_val const_int_eval(const expression& e);
 
 } // namespace mcc
 

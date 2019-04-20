@@ -338,6 +338,8 @@ type_ptr decay(const type_ptr& t);
 bool is_convertible(const type_ptr& l, const type_ptr& r);
 bool is_compatible_pointer_type(const type_ptr& l, const type_ptr& r, bool ignore_cvr = false);
 bool redecl_type_compare(const type& l, const type& r);
+bool types_equal(const type& l, const type& r);
+type_ptr var_arg_type(const type_ptr& t);
 
 size_t sizeof_type(ctype ct);
 size_t sizeof_type(const type& t);

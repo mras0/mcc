@@ -344,7 +344,6 @@ type_ptr decay1(const type_ptr& t) {
         return make_ptr_t(t);
     } else if (base == ctype::array_t) {
         return make_ptr_t(t->array_val().t());
-        return t;
     } else if (base == ctype::enum_t) {
         return std::make_shared<type>(ctype::int_t);
     }
@@ -395,7 +394,6 @@ bool is_convertible(const type_ptr& l, const type_ptr& r) {
         return &l->union_val() == &r->union_val();
     }
     NOT_IMPLEMENTED(*l << " " << *r);
-    return true;
 }
 
 bool redecl_type_compare(const type& l, const type& r) {
@@ -502,6 +500,28 @@ size_t alignof_type(const type& t) {
         return t.union_val().align();
     } else if (base == ctype::array_t) {
         return alignof_type(*t.array_val().t());
+    }
+    NOT_IMPLEMENTED(t);
+}
+
+bool types_equal(const type& l, const type& r) {
+    if (l.ct() != r.ct()) {
+        return false;
+    }
+    const auto b = l.base();
+    if (b < ctype::pointer_t) {
+        return true;
+    } else if (b == ctype::pointer_t) {
+        return types_equal(*l.pointer_val(), *r.pointer_val());
+    }
+    NOT_IMPLEMENTED(l);
+}
+
+type_ptr var_arg_type(const type_ptr& t) {
+    if (t->base() == ctype::pointer_t) {
+        return t;
+    } else if (is_integral(t->base())) {
+        return t->base() < ctype::int_t ? std::make_shared<type>(ctype::int_t) : t;
     }
     NOT_IMPLEMENTED(t);
 }
