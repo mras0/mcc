@@ -55,7 +55,7 @@ private:
     friend scope;
     friend parser;
 
-    void declare(const type_ptr& t);
+    void declare(const type_ptr& t, bool is_definition = false);
     void define(init_decl& id);
     void define(const const_int_val& civ);
     void define_tag_type(const tag_info_ptr& ti);

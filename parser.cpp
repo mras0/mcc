@@ -321,20 +321,23 @@ const struct_union_member& find_struct_union_member(const type_ptr& t, const std
     NOT_IMPLEMENTED(id << " not found in " << *t);
 }
 
-void symbol::declare(const type_ptr& t) {
+void symbol::declare(const type_ptr& t, bool is_definition) {
     assert(t);
     if (declaration_) {
         if (!redecl_type_compare(*declaration_, *t)) {
             NOT_IMPLEMENTED(id_ << " already declared as " << *declaration_ << " invalid redeclaration as " << *t);
         }
-        return;
+        // Keep original declaration unless this is the actual definition
+        if (!is_definition) {
+            return;
+        }
     }
     declaration_ = t;
 }
 
 void symbol::define(init_decl& id) {
     assert(id.d().id() == id_);
-    declare(id.d().t());
+    declare(id.d().t(), id.has_init_val());
     if (!id.has_init_val()) {
         return;
     }

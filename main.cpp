@@ -363,7 +363,9 @@ public:
     void do_all(const parse_result& pr) {
         for (const auto& s : scope_symbols(pr.global_scope())) {
             if (!s->definition()) {
-                add_extern(*s);
+                if (s->decl_type() && !(s->decl_type()->ct() & ctype::typedef_f)) {
+                    add_extern(*s);
+                }
             } else {
                 std::cout << "\tGLOBAL " << s->id() << "\n";
             }
@@ -417,7 +419,29 @@ public:
         emit_section_change("data");
         const auto l = make_label();
         emit_label(l);
-        emit("db", quoted(e.text()));
+        std::ostringstream oss;
+        std::string accum;
+        auto dump_str = [&]() {
+            if (!accum.empty()) {
+                if (!oss.str().empty()) oss << ", ";
+                oss << "'" << accum << "'";
+                accum.clear();
+            }
+        };
+        for (const auto& c: e.text()) {
+            if (c < 32 || c > 127 || c == '\'') {
+                dump_str();
+                if (!oss.str().empty()) oss << ", ";
+                oss << static_cast<int>(c);
+            } else {
+                accum += c;
+            }
+        }
+        dump_str();
+        if (!oss.str().empty()) oss << ", ";
+        oss << "0";
+
+        emit("db", oss.str());
         emit_section_change("code");
         emit("MOV", "RAX", l);
     }
@@ -575,8 +599,23 @@ public:
             NEXT_COMMENT(ds->sym().id());
             const auto& si = find_sym(ds->sym());
             const auto& t = si.sym->decl_type();
-            handle_and_convert(ds->init_expr(), t);
-            handle_store(rbp_str(si.offset), decay(t));
+            if (is_integral(t->base())) {
+                handle_and_convert(ds->init_expr(), t);
+                handle_store(rbp_str(si.offset), t);
+            } else if (t->base() == ctype::array_t) {
+                assert(ds->init_expr().et()->base() == ctype::reference_t && ds->init_expr().et()->reference_val()->base() == ctype::array_t);
+                if (ds->init_expr().et()->reference_val()->array_val().bound() == array_info::unbounded) {
+                    NOT_IMPLEMENTED(*ds);
+                }
+                const auto size = sizeof_type(*ds->init_expr().et()->reference_val());
+                handle(ds->init_expr());
+                emit("MOV", "RSI", "RAX");
+                emit("LEA", "RDI", rbp_str(si.offset));
+                emit("MOV", "RCX", size);
+                emit("REP", "MOVSB");
+            } else {
+                NOT_IMPLEMENTED(*t);
+            }
         }
     }
     void operator()(const labeled_statement& s) { NOT_IMPLEMENTED(s); }
@@ -742,7 +781,7 @@ private:
         if (src->base() == ctype::reference_t) {
             const auto& rt = src->reference_val();
             if (rt->base() == ctype::array_t) {
-                if (dst->base() != ctype::array_t && dst->base() != ctype::pointer_t) {
+                if (dst->base() != ctype::pointer_t) {
                     NOT_IMPLEMENTED("Conversion from " << *rt << " (" << *src << ") to " << *dst);
                 }
             } else {
