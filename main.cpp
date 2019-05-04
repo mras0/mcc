@@ -256,7 +256,7 @@ std::string next_comment_;
 #define NEXT_COMMENT(args) do { std::ostringstream oss_; oss_<<args; if (!next_comment_.empty()) next_comment_ += "; "; next_comment_ += oss_.str(); } while (0)
 
 void emit_section_change(const std::string& s) {
-    assert(s == "code" || s == "data");
+    assert(s == "code" || s == "data" || s == "rodata" || s == "bss");
     if (s != current_section) {
         std::cout << "\tSECTION ." << s << "\n";
         current_section = s;
@@ -287,6 +287,11 @@ void emit(const std::string& inst, Args&&... args) {
         next_comment_.clear();
     }
     std::cout << "\n";
+}
+
+void emit_zeros(size_t num_bytes) {
+    assert(current_section != "bss");
+    emit("TIMES " + std::to_string(num_bytes) + " DB 0");
 }
 
 const char* compare_cond(token_type op, bool unsigned_) {
@@ -329,8 +334,11 @@ enum r64_names {
 std::string reg_name_for_type(ctype t, r64_names r = RAX) {
     assert(r == RAX || r == RDX);
     switch (base_type(t)) {
+    case ctype::bool_t:         [[fallthrough]];
     case ctype::plain_char_t:   [[fallthrough]];
     case ctype::char_t:         return r == RAX ? "AL"  : "DL";
+    case ctype::short_t:        return r == RAX ? "AX"  : "DX";
+    case ctype::long_t:         [[fallthrough]];
     case ctype::int_t:          return r == RAX ? "EAX" : "EDX";
     case ctype::pointer_t:      [[fallthrough]];
     case ctype::long_long_t:    return r == RAX ? "RAX" : "RDX";
@@ -345,14 +353,33 @@ bool unsigned_arit(const type& t)  {
 
 std::string arit_op_name(token_type t, bool is_unsigned) {
     switch (t) {
-    case token_type::plus:  return "ADD";
-    case token_type::minus: return "SUB";
-    case token_type::star:  return is_unsigned ? "MUL" : "IMUL";
-    case token_type::and_:  return "AND";
-    case token_type::xor_:  return "XOR";
-    case token_type::or_:   return "OR";
+    case token_type::plus:   return "ADD";
+    case token_type::minus:  return "SUB";
+    case token_type::star:   return is_unsigned ? "MUL" : "IMUL";
+    case token_type::and_:   return "AND";
+    case token_type::xor_:   return "XOR";
+    case token_type::or_:    return "OR";
+    case token_type::lshift: return is_unsigned ? "LSL" : "ASL";
+    case token_type::rshift: return is_unsigned ? "LSR" : "ASR";
     }
     NOT_IMPLEMENTED(t);
+}
+
+std::string data_decl_suffix(ctype ct) {
+    switch (base_type(ct)) {
+    case ctype::plain_char_t:
+    case ctype::char_t:
+        return "B";
+    case ctype::short_t:
+        return "W";
+    case ctype::int_t:
+    case ctype::long_t:
+        return "D";
+    case ctype::long_long_t:
+    case ctype::pointer_t:
+        return "Q";
+    }
+    NOT_IMPLEMENTED(ct);
 }
 
 const char* const arg_regs[4] = {"RCX","RDX","R8","R9"};
@@ -362,32 +389,60 @@ public:
     explicit test_visitor() {}
 
     void do_all(const parse_result& pr) {
+        std::vector<const symbol*> syms;
         for (const auto& s : scope_symbols(pr.global_scope())) {
             if (!s->definition()) {
-                if (s->decl_type() && !(s->decl_type()->ct() & ctype::typedef_f)) {
+                if (s->decl_type() && !(s->decl_type()->ct() & ctype::typedef_f) && s->referenced() && !s->has_const_int_def()) {
                     add_extern(*s);
                 }
             } else {
-                std::cout << "\tGLOBAL " << s->id() << "\n";
+                if (!(s->decl_type()->ct() & ctype::static_f)) {
+                    std::cout << "\tGLOBAL " << s->id() << "\n";
+                }
+                syms.push_back(s.get());
+            }
+        }
+        // Data first
+        std::sort(syms.begin(), syms.end(), [](const symbol* l, const symbol* r) {
+            return (l->decl_type()->base() == ctype::function_t) < (r->decl_type()->base() == ctype::function_t);
+        });
+        for (const auto s: syms) {
+            //if (s->id() != "options_W") {
+            //    std::cout << "Line " << __LINE__ << " Skipping " << s->id() << "\n";
+            //    continue;
+            //}
+
+            if (s->decl_type()->base() == ctype::function_t) {
+                handle_function(*s->definition());
+            } else {
+                handle_global_data(*s->definition());
             }
         }
 
-
+#if 0
         for (const auto& d: pr.decls()) {
             const auto& t = d->d().t();
-            if (!!(t->ct() & ctype::typedef_f)) {
+            if (!!(t->ct() & ctype::typedef_f) || d->d().id().empty()) {
                 continue;
             }
             if (t->base() == ctype::function_t) {
-                if (d->has_init_val()) {
-                    handle_function(*d);
-                }
+                //if (d->has_init_val()) {
+                //    handle_function(*d);
+                //}
             } else {
-                if (!!(t->ct() & ctype::extern_f)) {
-          //          add_extern(*d);
-                } else {
-                    NOT_IMPLEMENTED(*d);
-                }
+                std::cout << d->d() << "\n";
+                //if (!(t->ct() & ctype::extern_f)) {
+                //    handle_global_data(*d);
+                //}
+            }
+        }
+#endif
+
+        if (!string_literals_.empty()) {
+            emit_section_change("rodata");
+            for (const auto& sl: string_literals_) {
+                emit_label(sl.second);
+                emit_string_literal(sl.first);
             }
         }
     }
@@ -397,7 +452,12 @@ public:
     }
     
     void handle(const statement& s) {
-        visit(*this, s);
+        try {
+            visit(*this, s);
+        } catch (...) {
+            std::cerr << "At " << s.pos() << "\n";
+            throw;
+        }
     }
 
     //
@@ -417,34 +477,7 @@ public:
     }
     void operator()(const const_float_expression& e) { NOT_IMPLEMENTED(e); }
     void operator()(const string_lit_expression& e) {
-        emit_section_change("data");
-        const auto l = make_label();
-        emit_label(l);
-        std::ostringstream oss;
-        std::string accum;
-        auto dump_str = [&]() {
-            if (!accum.empty()) {
-                if (!oss.str().empty()) oss << ", ";
-                oss << "'" << accum << "'";
-                accum.clear();
-            }
-        };
-        for (const auto& c: e.text()) {
-            if (c < 32 || c > 127 || c == '\'') {
-                dump_str();
-                if (!oss.str().empty()) oss << ", ";
-                oss << static_cast<int>(c);
-            } else {
-                accum += c;
-            }
-        }
-        dump_str();
-        if (!oss.str().empty()) oss << ", ";
-        oss << "0";
-
-        emit("db", oss.str());
-        emit_section_change("code");
-        emit("MOV", "RAX", l);
+        emit("MOV", "RAX", add_string_lit(e.text()));
     }
     void operator()(const initializer_expression& e) {
         if (e.et()->base() != ctype::reference_t || e.et()->reference_val()->base() != ctype::array_t) {
@@ -464,19 +497,15 @@ public:
         emit_section_change("data");
         const auto l = make_label();
         emit_label(l);
-        emit("db", oss.str());
+        emit("DB", oss.str());
         emit_section_change("code");
         emit("MOV", "RAX", l);
     }
     void operator()(const array_access_expression& e) {
         const auto& at = decay(e.a().et());
-        const auto element_size = sizeof_type(*at->pointer_val());
         handle_and_convert(e.a(), at);
         emit("PUSH", "RAX");
-        handle_and_convert(e.i(), std::make_shared<type>(ctype::long_long_t));
-        if (element_size > 1) {
-            emit("IMUL", "RAX", element_size);
-        }
+        handle_and_convert(e.i(), at);
         emit("POP", "RCX");
         emit("LEA", "RAX", "[RAX+RCX]");
     }
@@ -546,14 +575,30 @@ public:
         }
         NOT_IMPLEMENTED(e << " : " << *e.et());
     }
-    void operator()(const cast_expression& e) { NOT_IMPLEMENTED(e); }
+    void operator()(const cast_expression& e) {
+        handle_and_convert(e.e(), e.et());
+    }
+
     void operator()(const binary_expression& e) {
         const auto op = e.op();
 
-        if (op == token_type::comma || op == token_type::andand || op == token_type::oror) {
+        if (op == token_type::comma) {
             NOT_IMPLEMENTED(e);
         }
+
         const auto& ct = e.common_t();
+        if (op == token_type::andand || op == token_type::oror) {
+            const bool is_and = op == token_type::andand;
+            const auto l_end  = make_label();
+            NEXT_COMMENT(op << " start");
+            handle_and_convert(e.l(), ct);
+            emit("TEST", "AL", "AL");
+            emit(is_and ? "JZ" : "JNZ", l_end);
+            handle_and_convert(e.r(), ct);
+            NEXT_COMMENT(op << " end");
+            emit_label(l_end);
+            return;
+        }
 
         if (is_comparison_op(op)) {
             if (!is_integral(ct->base())) NOT_IMPLEMENTED(e);
@@ -591,7 +636,21 @@ public:
         handle_arit_op(op, ct);
     }
 
-    void operator()(const conditional_expression& e) { NOT_IMPLEMENTED(e); }
+    void operator()(const conditional_expression& e) {
+        const auto l_rhs = make_label();
+        const auto l_end = make_label();
+        NEXT_COMMENT("? begin");
+        handle(e.cond());
+        emit("TEST", "AL", "AL");
+        emit("JZ", l_rhs);
+        handle(e.l());
+        emit("JMP", l_end);
+        NEXT_COMMENT("? rhs");
+        emit_label(l_rhs);
+        handle(e.r());
+        NEXT_COMMENT("? end");
+        emit_label(l_end);
+    }
 
     //
     // Statement
@@ -710,6 +769,16 @@ private:
     int next_label_ = 0;
     std::string end_label_;
     type_ptr func_ret_type_;
+    std::map<std::string, std::string> string_literals_;
+
+    std::string add_string_lit(const std::string& text) {
+        if (auto it = string_literals_.find(text); it != string_literals_.end()) {
+            return it->second;
+        }
+        const auto l = make_label();
+        string_literals_.emplace(text, l);
+        return l;
+    }
 
     void add_sym(const symbol& sym, int offset) {
         assert(!try_find_sym(sym));
@@ -799,6 +868,158 @@ private:
         emit("RET");                
     }
 
+    void emit_string_literal(const std::string& text) {
+        std::ostringstream oss;
+        std::string accum;
+        auto dump_str = [&]() {
+            if (!accum.empty()) {
+                if (!oss.str().empty())
+                    oss << ", ";
+                oss << "'" << accum << "'";
+                accum.clear();
+            }
+        };
+        for (const auto c : text) {
+            if (c < 32 || c > 127 || c == '\'') {
+                dump_str();
+                if (!oss.str().empty())
+                    oss << ", ";
+                oss << static_cast<int>(c);
+            } else {
+                accum += c;
+            }
+        }
+        dump_str();
+        if (!oss.str().empty())
+            oss << ", ";
+        oss << "0";
+
+        emit("DB", oss.str());
+    }
+
+    void emit_initializer(const type& t, const expression& init) {
+        if (t.base() == ctype::array_t) {
+           const auto& av = t.array_val();
+           if (av.bound() == array_info::unbounded) {
+               NOT_IMPLEMENTED(t << " " << init);
+           }
+           if (auto sl = dynamic_cast<const string_lit_expression*>(&init)) {
+               if (sizeof_type(*av.t()) != 1 || av.bound() != sl->text().size() + 1) {
+                   NOT_IMPLEMENTED(t << " " << init);
+               }
+               emit_string_literal(sl->text());
+               return;
+           } else if (auto il = dynamic_cast<const initializer_expression*>(&init)) {
+               const int64_t missing = static_cast<int64_t>(av.bound()) - static_cast<int64_t>(il->es().size());
+               if (missing < 0) {
+                   NOT_IMPLEMENTED(t << " " << init << " missing: " << missing);
+               }
+               for (const auto& e: il->es()) {                   
+                   emit_initializer(*av.t(), *e);
+               }
+               if (missing) {
+                   NEXT_COMMENT(missing << " x " << *av.t());
+                   emit_zeros(sizeof_type(*av.t())*missing);
+               }
+               return;
+           }
+           NOT_IMPLEMENTED(t << " " << init);
+        } else if (t.base() == ctype::struct_t) {
+            const auto& sv = t.struct_val();
+            auto il = dynamic_cast<const initializer_expression*>(&init);
+            if (!il) {
+                NOT_IMPLEMENTED(t << " " << init);
+            }
+            if (sv.members().empty() || il->es().size() > sv.members().size()) {
+                NOT_IMPLEMENTED(t << " " << init);
+            }
+            size_t offset = 0;
+            for (size_t i = 0; i < il->es().size(); ++i) {
+                const auto& m = sv.members()[i];
+                if (const auto pad = m.pos() - offset) {
+                    NEXT_COMMENT(pad << " bytes of padding");
+                    emit_zeros(pad);
+                    offset += pad;
+                }
+                NEXT_COMMENT("pos " << m.pos() << " offset " << offset << " " << m.id());
+                emit_initializer(*m.t(), *il->es()[i]);
+                offset += sizeof_type(*m.t());
+            }
+
+            const auto& last_initialized_member = sv.members()[il->es().size()-1];
+            const auto extra = sv.size() - (last_initialized_member.pos() + sizeof_type(*last_initialized_member.t())); 
+
+            if (extra) {
+                NEXT_COMMENT(extra << " bytes of padding" << (il->es().size() == sv.members().size() ? "" : " and missing initializers"));
+                emit_zeros(extra);
+            }
+            return;
+        } else if (t.base() >= ctype::pointer_t) {
+           if (auto sl = dynamic_cast<const string_lit_expression*>(&init)) {
+               if (sizeof_type(*t.pointer_val()) != 1) {
+                   NOT_IMPLEMENTED(t << " " << init);
+               }
+               emit("D"+data_decl_suffix(t.ct()), add_string_lit(sl->text()));
+               return;
+           } else if (auto ce = dynamic_cast<const cast_expression*>(&init); ce && ce->et()->base() == ctype::pointer_t) {
+               // HACK HACK
+               const auto ival = const_int_eval(ce->e());
+               emit("D"+data_decl_suffix(t.ct()), ival);
+               return;
+           }
+           NOT_IMPLEMENTED(t << " " << init);
+        }
+
+        emit("D"+data_decl_suffix(t.ct()), const_int_eval(init).val);
+    }
+
+    static bool is_const_init_type(const type& t) {
+        if (t.base() == ctype::array_t) {
+            return is_const_init_type(*t.array_val().t());
+        }
+        return !!(t.ct() & ctype::const_f);
+    }
+
+    void handle_global_data(const init_decl& id) {
+       const auto& t = *id.d().t();
+       const auto l = name_mangle(id.d().id());
+       if (!id.has_init_val()) {
+            emit_section_change("bss");
+            emit_label(l);
+            emit("RESB", sizeof_type(t));
+            return;
+       }       
+       
+       emit_section_change(is_const_init_type(t) ? "rodata" : "data");
+       NEXT_COMMENT(id.d());
+       emit_label(l);
+       emit_initializer(t, id.init_expr());
+       /*
+
+       if (t->base() == ctype::array_t) {
+           const auto& av = t->array_val();
+           if (av.bound() == array_info::unbounded || av.t()->base() >= ctype::pointer_t) {
+               NOT_IMPLEMENTED(id.d());
+           }
+           if (auto sl = dynamic_cast<const string_lit_expression*>(&id.init_expr())) {
+               assert(sizeof_type(av.t()) == 1);
+               emit_string_literal(sl->text(), l);
+               return;
+           } else if (auto il = dynamic_cast<const initializer_expression*>(&id.init_expr())) {
+               std::cout << il->es().size() << " is the size\n";
+           }
+
+           std::cout << "TODO: D" << data_decl_suffix(av.t()->ct()) << "\n";
+           std::cout << id.init_expr() << "\n";
+           NOT_IMPLEMENTED("FIXME");
+           return;
+       }
+
+       if (t->base() >= ctype::pointer_t) {
+           NOT_IMPLEMENTED(id.d());
+       }*/
+   }
+
    void handle_conversion(const type_ptr& dst, const type_ptr& src) {
         if (types_equal(*dst, *src)) {
             return;
@@ -824,6 +1045,15 @@ private:
         if (is_arithmetic(src->base()) && is_arithmetic(dst->base())) {
             if (src->base() < dst->base()) {
                 emit(unsigned_arit(*src) ? "MOVZX" : "MOVSX", "RAX", reg_name_for_type(src->ct()));
+            }
+            return;
+        }
+
+        if (dst->base() == ctype::pointer_t && is_integral(src->base())) {
+            // Must be pointer arithmetic
+            const auto element_size = sizeof_type(*dst->pointer_val());
+            if (element_size > 1) {
+                emit("IMUL", "RAX", element_size);
             }
             return;
         }
@@ -872,7 +1102,7 @@ private:
     // Assumes ops in RAX,RDX (for int/pointer values)
     void handle_arit_op(token_type op, const type_ptr& t) {
         const auto b = t->base();
-        if (!is_integral(b)) {
+        if (!is_integral(b) && b != ctype::pointer_t) {
             NOT_IMPLEMENTED(op << " " << *t);
         }
         emit(arit_op_name(op, unsigned_arit(*t)), reg_name_for_type(b, RAX), reg_name_for_type(b, RDX));
@@ -909,7 +1139,10 @@ private:
 
 void process_one(source_manager& sm, const std::string& filename) {
     test_visitor vis{};
-    vis.do_all(parse(sm, sm.load(filename)));
+    std::cerr << "Parsing " << filename << "\n";
+    const auto pr = parse(sm, sm.load(filename));
+    std::cerr << "Generating code...\n";
+    vis.do_all(pr);
 } 
 
 int main(int argc, char* argv[]) {

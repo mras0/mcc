@@ -43,6 +43,7 @@ public:
 
     bool has_const_int_def() const { return civ_.type != ctype::none; }
     const const_int_val& const_int_def() const { assert(has_const_int_def()); return civ_; }
+    bool referenced() const { return referenced_; }
 
 private:
     const std::string   id_;
@@ -51,6 +52,7 @@ private:
     init_decl*          definition_;
     const_int_val       civ_;
     int                 label_state_;
+    bool                referenced_;
 
     friend scope;
     friend parser;

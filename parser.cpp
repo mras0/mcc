@@ -220,6 +220,14 @@ struct const_int_evaluator {
     }
 
     const_int_val operator()(const prefix_expression& e) {
+        if (e.op() == token_type::and_) {
+            // HACK to support offsetof
+            if (auto ae = dynamic_cast<const access_expression*>(&e.e())) {
+                return const_int_val{ae->m().pos(), ctype::long_long_t | ctype::unsigned_f};
+            }
+            NOT_IMPLEMENTED(e);
+        }
+
         auto val = visit(*this, e.e());
         switch (e.op()) {
         case token_type::plus:
@@ -289,6 +297,13 @@ struct const_int_evaluator {
         }
     }
 
+    const_int_val operator()(const cast_expression& e) {
+        if (!is_integral(e.et()->base())) {
+            NOT_IMPLEMENTED(e);
+        }
+        return cast(visit(*this, e.e()), e.et()->ct());
+    }
+
     const_int_val operator()(const expression& e) {
         NOT_IMPLEMENTED(e);
     }
@@ -299,7 +314,7 @@ const_int_val const_int_eval(const expression& e) {
 }
 
 #define EXPECT(tok) do { if (current().type() != token_type::tok) NOT_IMPLEMENTED("Expected " << token_type::tok << " got " << current()); next(); } while (0)
-#define TRACE(msg) std::cout << __FILE__ << ":" << __LINE__ << ": " << __func__ <<  " Current: " << current() << " " << msg << "\n"
+#define TRACE(msg) std::cerr << __FILE__ << ":" << __LINE__ << ": " << __func__ <<  " Current: " << current() << " " << msg << "\n"
 
 const struct_union_member* search_decl(const type_ptr& t, const std::string_view id) {
     for (const auto& m: struct_union_members(*t)) {
@@ -502,7 +517,7 @@ public:
             init_decl_list res;
             while (current().type() != token_type::eof) {
                 if (current().type() == token_type::semicolon) {
-                    std::cout << "Ignoring stray semicolon at " << current_source_pos_ << "\n";
+                    std::cerr << "Ignoring stray semicolon at " << current_source_pos_ << "\n";
                     next();
                     continue;
                 }
@@ -563,6 +578,7 @@ private:
         assert(!active_scopes_.empty());
         for (auto it = active_scopes_.crbegin(), end = active_scopes_.crend(); it != end; ++it) {
             if (auto sym = (*it)->find(id); sym && sym->decl_type()) {
+                sym->referenced_ = true;
                 return sym;
             }
         }
@@ -613,7 +629,7 @@ private:
     }
 
     void next() {
-        //std::cout << "Consuming " << current() << "\n";
+        //std::cerr << "Consuming " << current() << "\n";
         assert(current().type() != token_type::eof);
         current_source_pos_ = lex_.position();
         lex_.next();
@@ -730,9 +746,9 @@ private:
         try {
             EXPECT(semicolon);
         } catch (...) {
-            std::cout << "Parsed declarations:\n";
+            std::cerr << "Parsed declarations:\n";
             for (const auto& d: decls) {
-                std::cout << "\t" << *d << "\n";
+                std::cerr << "\t" << *d << "\n";
             }
             throw;
         }
@@ -876,7 +892,7 @@ private:
                 next();
                 EXPECT(rparen);
                 EXPECT(rparen);
-                std::cout << "Ignoring __attribute__((" << id << "))\n";
+                std::cerr << "Ignoring __attribute__((" << id << "))\n";
                 continue;
             }
 
@@ -1758,7 +1774,7 @@ private:
         try {
             EXPECT(semicolon);
         } catch (...) {
-            std::cout << "Parsed expression: " << *e << "\n";
+            std::cerr << "Parsed expression: " << *e << "\n";
             throw;
         }
         return std::make_unique<expression_statement>(statement_pos, std::move(e));
