@@ -116,7 +116,7 @@ void labeled_statement::do_print(std::ostream& os) const {
     }
     switch (val_.index()) {
     case 0: os << "default"; break;
-    case 1: os << std::get<1>(val_); break;
+    case 1: os << std::get<1>(val_)->id(); break;
     case 2: os << "case " << *std::get<2>(val_); break;
     default:
         assert(false);
@@ -1171,7 +1171,7 @@ private:
                 const auto a = alignof_type(*d->d().t());
                 const auto pos = round_up(size, a);
                 const auto s = sizeof_type(*d->d().t());
-                size = pos + s;
+                if (!is_union) size = pos + s;
                 max_align = std::max(max_align, a);
                 max_size = std::max(max_size, s);
                 decls.push_back(struct_union_member{d->d(), pos});
@@ -1497,7 +1497,7 @@ private:
             for (;;) {
                 const auto look_ahead = current().type();
                 const auto look_ahead_precedence = operator_precedence(look_ahead);
-                if (look_ahead_precedence > precedence /*|| (look_ahead_precedence == precedence && !is_right_to_left(look_ahead))*/) {
+                if (look_ahead_precedence > precedence || (look_ahead_precedence == precedence && !is_right_associative(look_ahead))) {
                     break;
                 }
                 rhs = parse_expression1(std::move(rhs), look_ahead_precedence);
@@ -1564,7 +1564,8 @@ private:
                 } else {
                     check_convertible(dlt, rt);
                 }
-                t = common_t = dlt;
+                t = op == token_type::eq ? lt : dlt;
+                common_t = dlt;
             } else if (is_comparison_op(op)) {
                 if (lp) handle_const_null(rt, *rhs);
                 if (rp) handle_const_null(dlt, *lhs);

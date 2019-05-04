@@ -333,7 +333,7 @@ type_ptr remove_cvr(const type_ptr& t) {
 }
 
 type_ptr to_rvalue(const type_ptr& t) {
-    return remove_cvr(t->base() == ctype::reference_t ? t->reference_val() : t);
+    return remove_flags(t->base() == ctype::reference_t ? t->reference_val() : t, ctype::cvr_f | ctype::storage_f);
 }
 
 type_ptr decay1(const type_ptr& t) {
@@ -513,17 +513,20 @@ bool types_equal(const type& l, const type& r) {
         return true;
     } else if (b == ctype::pointer_t) {
         return types_equal(*l.pointer_val(), *r.pointer_val());
+    } else if (b == ctype::struct_t) {
+        return &l.struct_val() == &r.struct_val();
     }
     NOT_IMPLEMENTED(l);
 }
 
 type_ptr var_arg_type(const type_ptr& t) {
-    if (t->base() == ctype::pointer_t) {
+    const auto b = t->base();
+    if (b == ctype::pointer_t || b == ctype::double_t) {
         return t;
-    } else if (is_integral(t->base())) {
+    } else if (is_integral(b)) {
         return t->base() < ctype::int_t ? std::make_shared<type>(ctype::int_t) : t;
     }
-    NOT_IMPLEMENTED(t);
+    NOT_IMPLEMENTED(*t);
 }
 
 } // namespace mcc

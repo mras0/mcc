@@ -68,11 +68,15 @@ constexpr ctype modified_base_type(ctype t, ctype new_base) {
 }
 
 constexpr bool is_integral(ctype t) {
-    return base_type(t) >= ctype::bool_t && base_type(t) <= ctype::long_long_t;
+    return (base_type(t) >= ctype::bool_t && base_type(t) <= ctype::long_long_t) || base_type(t) == ctype::enum_t;
+}
+
+constexpr bool is_floating_point(ctype t) {
+    return base_type(t) >= ctype::float_t && base_type(t) <= ctype::long_double_t;
 }
 
 constexpr bool is_arithmetic(ctype t) {
-    return base_type(t) >= ctype::bool_t && base_type(t) <= ctype::long_double_t;
+    return (base_type(t) >= ctype::bool_t && base_type(t) <= ctype::long_double_t) || base_type(t) == ctype::enum_t;
 }
 
 constexpr ctype modified_bitfield(ctype t, uint8_t val) {

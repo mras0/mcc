@@ -115,6 +115,7 @@ std::ostream& operator<<(std::ostream& os, token_type tt);
 token_type keyword_token_from_text(const std::string_view s);
 token_type op_token_from(const std::string_view s);
 int operator_precedence(token_type t);
+bool is_right_associative(token_type t);
 bool is_assignment_op(token_type t);
 token_type without_assignment(token_type t);
 bool is_comparison_op(token_type op);
@@ -126,6 +127,7 @@ struct const_int_val {
 
 std::ostream& operator<<(std::ostream& os, const_int_val civ);
 const_int_val cast(const const_int_val& val, ctype new_type);
+bool operator<(const const_int_val& l, const const_int_val& r);
 
 class token {
 public:

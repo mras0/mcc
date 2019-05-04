@@ -239,7 +239,7 @@ ELFW(ST_INFO)(sym_bind, ELFW(ST_TYPE)(esym->st_info));
                 throw std::runtime_error(oss.str());
             }
         } catch (...) {
-            std::cout << "Failure while processing\n" << delim << t.text << "\n" << delim << "\n";
+            std::cerr << "Failure while processing\n" << delim << t.text << "\n" << delim << "\n";
             throw;
         }
     }
@@ -254,27 +254,6 @@ std::string current_section;
 std::string next_comment_;
 
 #define NEXT_COMMENT(args) do { std::ostringstream oss_; oss_<<args; if (!next_comment_.empty()) next_comment_ += "; "; next_comment_ += oss_.str(); } while (0)
-
-void emit_section_change(const std::string& s) {
-    assert(s == "code" || s == "data" || s == "rodata" || s == "bss");
-    if (s != current_section) {
-        std::cout << "\tSECTION ." << s << "\n";
-        current_section = s;
-    }
-}
-
-void emit_extern_decl(const std::string& id) {
-    std::cout << "\tEXTERN " << id << "\n";
-}
-
-void emit_label(const std::string& l) {
-    std::cout << l << ":";
-    if (!next_comment_.empty()) {
-        std::cout << "\t\t; " << next_comment_;
-        next_comment_.clear();
-    }
-    std::cout << "\n";
-}
 
 template<typename... Args>
 void emit(const std::string& inst, Args&&... args) {
@@ -294,11 +273,56 @@ void emit_zeros(size_t num_bytes) {
     emit("TIMES " + std::to_string(num_bytes) + " DB 0");
 }
 
+void emit_section_change(const std::string& s) {
+    assert(s == "code" || s == "data" || s == "rodata" || s == "bss");
+    if (s != current_section) {
+        emit("SECTION", "." + s);
+        current_section = s;
+    }
+}
+
+void emit_extern_decl(const std::string& id) {
+    emit("EXTERN", id);
+}
+
+void emit_global_decl(const std::string& id) {
+    emit("GLOBAL", id);
+}
+
+void emit_label(const std::string& l) {
+    std::cout << l << ":";
+    if (!next_comment_.empty()) {
+        std::cout << "\t\t; " << next_comment_;
+        next_comment_.clear();
+    }
+    std::cout << "\n";
+}
+
+void emit_copy(size_t sz) {
+    std::string suffix = "B";
+    if (sz % 8 == 0) {
+        sz /= 8;
+        suffix = "Q";
+    } else if (sz % 4 == 0) {
+        sz /= 4;
+        suffix = "D";
+    } else if (sz % 2 == 0) {
+        sz /= 2;
+        suffix = "W";
+    }
+    if (sz > 1) {
+        emit("MOV", "RCX", sz);
+        emit("REP", "MOVS" + suffix);
+    } else {
+        emit("MOVS" + suffix);
+    }
+}
+
 const char* compare_cond(token_type op, bool unsigned_) {
     switch (op) {
     case token_type::lt:    return unsigned_ ? "B" : "L";
     case token_type::lteq:  return unsigned_ ? "BE" : "LE";
-    case token_type::eqeq:  return "EQ";
+    case token_type::eqeq:  return "E";
     case token_type::noteq: return "NE";
     case token_type::gt:    return unsigned_ ? "A" : "G";
     case token_type::gteq:  return unsigned_ ? "AE" : "GE";
@@ -314,12 +338,15 @@ std::string rbp_str(int offset) {
     return reg_off_str("RBP", offset);
 }
 
-std::string name_mangle(const std::string& id) { return id; }
+std::string name_mangle(const std::string& id) { return "$"+id; }
 
 std::string op_size_str(ctype t) {
     switch (t) {
     case ctype::int_t:
+    case ctype::long_t:
         return "DWORD ";
+    case ctype::long_long_t:
+        return "QWORD ";
     }
     NOT_IMPLEMENTED(t);
 }
@@ -338,6 +365,7 @@ std::string reg_name_for_type(ctype t, r64_names r = RAX) {
     case ctype::plain_char_t:   [[fallthrough]];
     case ctype::char_t:         return r == RAX ? "AL"  : "DL";
     case ctype::short_t:        return r == RAX ? "AX"  : "DX";
+    case ctype::enum_t:         [[fallthrough]];
     case ctype::long_t:         [[fallthrough]];
     case ctype::int_t:          return r == RAX ? "EAX" : "EDX";
     case ctype::pointer_t:      [[fallthrough]];
@@ -346,9 +374,9 @@ std::string reg_name_for_type(ctype t, r64_names r = RAX) {
     NOT_IMPLEMENTED(t);
 }
 
-bool unsigned_arit(const type& t)  {
-    assert(t.base() <= ctype::pointer_t);
-    return t.base() == ctype::pointer_t || !!(t.ct() & ctype::unsigned_f);
+bool unsigned_arit(ctype t)  {
+    assert(base_type(t) <= ctype::pointer_t);
+    return base_type(t) == ctype::pointer_t || !!(t & ctype::unsigned_f);
 }
 
 std::string arit_op_name(token_type t, bool is_unsigned) {
@@ -356,11 +384,13 @@ std::string arit_op_name(token_type t, bool is_unsigned) {
     case token_type::plus:   return "ADD";
     case token_type::minus:  return "SUB";
     case token_type::star:   return is_unsigned ? "MUL" : "IMUL";
+    case token_type::mod:    [[fallthrough]];
+    case token_type::div:    return is_unsigned ? "DIV" : "IDIV";
     case token_type::and_:   return "AND";
     case token_type::xor_:   return "XOR";
     case token_type::or_:    return "OR";
-    case token_type::lshift: return is_unsigned ? "LSL" : "ASL";
-    case token_type::rshift: return is_unsigned ? "LSR" : "ASR";
+    case token_type::lshift: return is_unsigned ? "SHL" : "SAL";
+    case token_type::rshift: return is_unsigned ? "SHR" : "SAR";
     }
     NOT_IMPLEMENTED(t);
 }
@@ -382,23 +412,36 @@ std::string data_decl_suffix(ctype ct) {
     NOT_IMPLEMENTED(ct);
 }
 
-const char* const arg_regs[4] = {"RCX","RDX","R8","R9"};
+const char* arg_reg_name(int n, bool integral) {
+    const char* const iarg_regs[4] = {"RCX","RDX","R8","R9"};
+    const char* const farg_regs[4] = {"XMM0","XMM1","XMM2","XMM3"};
+    assert(n < 4);
+    return integral ? iarg_regs[n] : farg_regs[n];
+}
 
 class test_visitor {
 public:
     explicit test_visitor() {}
+    ~test_visitor() {
+        assert(!break_labels_);
+        assert(!continue_labels_);
+        assert(!switches_);
+    }
 
     void do_all(const parse_result& pr) {
         std::vector<const symbol*> syms;
         for (const auto& s : scope_symbols(pr.global_scope())) {
-            if (!s->definition()) {
-                if (s->decl_type() && !(s->decl_type()->ct() & ctype::typedef_f) && s->referenced() && !s->has_const_int_def()) {
-                    add_extern(*s);
-                }
+            const auto& dt = s->decl_type();
+            if (!s->referenced() || s->has_const_int_def() || !dt || !!(dt->ct() & ctype::typedef_f)) {
+                continue;
+            }
+            if (!s->definition() && (!!(dt->ct() & ctype::extern_f) || dt->base() == ctype::function_t)) {
+                add_extern(*s);
             } else {
-                if (!(s->decl_type()->ct() & ctype::static_f)) {
-                    std::cout << "\tGLOBAL " << s->id() << "\n";
+                if (!(dt->ct() & ctype::static_f)) {
+                    emit_global_decl(s->id());
                 }
+                syms_.push_back(sym_info{s.get(), 0});
                 syms.push_back(s.get());
             }
         }
@@ -406,43 +449,20 @@ public:
         std::sort(syms.begin(), syms.end(), [](const symbol* l, const symbol* r) {
             return (l->decl_type()->base() == ctype::function_t) < (r->decl_type()->base() == ctype::function_t);
         });
+        //bool skip = true;
         for (const auto s: syms) {
-            //if (s->id() != "options_W") {
-            //    std::cout << "Line " << __LINE__ << " Skipping " << s->id() << "\n";
-            //    continue;
-            //}
-
             if (s->decl_type()->base() == ctype::function_t) {
                 handle_function(*s->definition());
             } else {
-                handle_global_data(*s->definition());
+                handle_global_data(*s);
             }
         }
-
-#if 0
-        for (const auto& d: pr.decls()) {
-            const auto& t = d->d().t();
-            if (!!(t->ct() & ctype::typedef_f) || d->d().id().empty()) {
-                continue;
-            }
-            if (t->base() == ctype::function_t) {
-                //if (d->has_init_val()) {
-                //    handle_function(*d);
-                //}
-            } else {
-                std::cout << d->d() << "\n";
-                //if (!(t->ct() & ctype::extern_f)) {
-                //    handle_global_data(*d);
-                //}
-            }
-        }
-#endif
 
         if (!string_literals_.empty()) {
             emit_section_change("rodata");
             for (const auto& sl: string_literals_) {
                 emit_label(sl.second);
-                emit_string_literal(sl.first);
+                emit_string_literal(sl.first, 0);
             }
         }
     }
@@ -475,7 +495,24 @@ public:
     void operator()(const const_int_expression& e) {
         emit("MOV", "RAX", e.val().val);
     }
-    void operator()(const const_float_expression& e) { NOT_IMPLEMENTED(e); }
+    void operator()(const const_float_expression& e) {
+        const double dval = e.val();
+        if (dval == 0.0) {
+            NEXT_COMMENT("0.0");
+            emit("PXOR", "XMM0", "XMM0");
+            return;
+        }
+
+        emit_section_change("rodata");
+        uint64_t uval;
+        std::memcpy(&uval, &dval, sizeof(double));
+        const auto l = make_label();
+        emit_label(l);
+        NEXT_COMMENT(dval);
+        emit("DQ", uval);
+        emit_section_change("code");
+        emit("MOVSD", "XMM0", "[" + l + "]");
+    }
     void operator()(const string_lit_expression& e) {
         emit("MOV", "RAX", add_string_lit(e.text()));
     }
@@ -484,7 +521,7 @@ public:
             NOT_IMPLEMENTED(e << " : " << *e.et());
         }
         const auto elem_t = e.et()->reference_val()->array_val().t();
-        if (!is_integral(elem_t->base()) || sizeof_type(*elem_t) != 1) {
+        if (!is_integral(elem_t->base())) {
             NOT_IMPLEMENTED(e << " : " << *e.et() << " elem type: " << *elem_t);
         }
 
@@ -497,7 +534,7 @@ public:
         emit_section_change("data");
         const auto l = make_label();
         emit_label(l);
-        emit("DB", oss.str());
+        emit("D" + data_decl_suffix(elem_t->ct()), oss.str());
         emit_section_change("code");
         emit("MOV", "RAX", l);
     }
@@ -505,7 +542,7 @@ public:
         const auto& at = decay(e.a().et());
         handle_and_convert(e.a(), at);
         emit("PUSH", "RAX");
-        handle_and_convert(e.i(), at);
+        handle_and_convert(e.i(), at, true);
         emit("POP", "RCX");
         emit("LEA", "RAX", "[RAX+RCX]");
     }
@@ -517,14 +554,20 @@ public:
         std::vector<stack_arg> args;
 
         size_t stack_adj_size = 0;
-        const auto& ptypes = to_rvalue(e.f().et())->function_val().params();
+
+        auto ft = to_rvalue(e.f().et());
+        if (ft->base() == ctype::pointer_t) {
+            ft = ft->pointer_val();
+        }
+        if (ft->base() != ctype::function_t) {
+            NOT_IMPLEMENTED(e << " : " << *ft);
+        }
+
+        const auto& ptypes = ft->function_val().params();
         assert(e.args().size() == ptypes.size() || to_rvalue(e.f().et())->function_val().variadic());
         for (size_t i = 0, sz = e.args().size(); i < sz; ++i) {
             const auto& aa = *e.args()[i];
             type_ptr t = decay(aa.et());
-            if (!is_integral(t->base()) && t->base() != ctype::pointer_t) {
-                NOT_IMPLEMENTED(aa << ":" << *t);
-            }
             if (i < ptypes.size()) {
                 t = ptypes[i].t();
             } else {
@@ -539,32 +582,94 @@ public:
         emit("SUB", "RSP", stack_adj_size);
 
         for (size_t i = e.args().size(); i--; ) {
+            const auto bt = args[i].t->base();
+            if (!is_arithmetic(bt) && bt != ctype::pointer_t) {
+                NOT_IMPLEMENTED(*args[i].t);
+            }
             handle_and_convert(*e.args()[i], args[i].t);
-            emit("MOV", reg_off_str("RSP", args[i].offset), "RAX");
+            const bool int_arg = is_integral(bt);
+            emit(int_arg ? "MOV" : "MOVSD", reg_off_str("RSP", args[i].offset), int_arg ? "RAX" : "XMM0");
         }
 
         handle(e.f());
         if(!e.args().empty()){
             for (size_t i = 0; i < std::min(4ULL, e.args().size()); ++i) {
-                emit("MOV", arg_regs[i], reg_off_str("RSP", args[i].offset));
+                const bool int_arg = is_integral(args[i].t->base());
+                emit(int_arg ? "MOV" : "MOVSD", arg_reg_name(static_cast<int>(i), int_arg), reg_off_str("RSP", args[i].offset));
             }
         }
         emit("CALL", "RAX");
         emit("ADD", "RSP", stack_adj_size);        
     }
-    void operator()(const access_expression& e) { NOT_IMPLEMENTED(e); }
+    void operator()(const access_expression& e) {        
+        if (e.op() == token_type::arrow) {
+            auto t = decay(e.e().et());
+            if (t->base() == ctype::pointer_t) {
+                handle_and_convert(e.e(), t);
+                NEXT_COMMENT(*t->pointer_val() << "->" << e.m().id());
+                emit("ADD", "RAX", e.m().pos());
+                return;
+            }
+        } else if (e.op() == token_type::dot) {
+            if (e.e().et()->base() == ctype::reference_t) {
+                const auto& rt = *e.e().et()->reference_val();
+                if (rt.base() == ctype::struct_t || rt.base() == ctype::union_t) {
+                    handle(e.e());
+                    NEXT_COMMENT((rt.base() == ctype::struct_t ? rt.struct_val().id() : rt.union_val().id()) << "." << e.m().id());
+                    emit("ADD", "RAX", e.m().pos());
+                }
+                return;
+            }
+        }
+        NOT_IMPLEMENTED(e << ", " << *e.e().et());
+    }
     void operator()(const sizeof_expression& e) { NOT_IMPLEMENTED(e); }
     void operator()(const prefix_expression& e) {
         const auto op = e.op();
-        handle(e.e());
         if (op == token_type::plusplus || op == token_type::minusminus) {
+            handle(e.e());
             handle_incr_decr(op, e.e().et()->reference_val(), true);
             return;
-        }
-        if (op == token_type::star) {
+        } else if (op == token_type::star || op == token_type::and_) {
+            handle(e.e());
+            return;
+        } else if (op == token_type::not_) {
+            handle_and_convert(e.e(), e.et());
+            if (e.et()->ct() != ctype::bool_t) {
+                NOT_IMPLEMENTED(e << " : " << *e.et());
+            }
+            emit("NOT", "AL");
+            return;
+        } else if (op == token_type::minus) {
+            const auto& dt = e.et();
+            handle_and_convert(e.e(), dt);
+            if (is_integral(dt->base())) {
+                emit("NEG", reg_name_for_type(dt->base()));
+                return;
+            } else if (is_floating_point(dt->base())) {
+                if (dt->base() == ctype::double_t || dt->base() == ctype::long_double_t) {
+                    static struct sign_const {
+                        sign_const() {
+                            emit_section_change("rodata");
+                            emit_label("__xmm_sign64");
+                            NEXT_COMMENT("64-bit signbit");
+                            emit("DQ", "0x8000000000000000");
+                            emit_section_change("code");
+                        }
+                    } sign_const_;
+                    emit("MOVSD", "XMM1", "[__xmm_sign64]");
+                    emit("PXOR", "XMM0", "XMM1");
+                    return;
+                }
+            }
+        } else if (op == token_type::bnot) {
+            const auto& dt = e.et();
+            assert(is_integral(dt->base()));
+            handle_and_convert(e.e(), dt);
+            emit("NOT", reg_name_for_type(dt->base()));
             return;
         }
-        NOT_IMPLEMENTED(e << " : " << *e.et());
+        NOT_IMPLEMENTED(e << " : " << *e.e().et() << " --> " << *e.et());
     }
     void operator()(const postfix_expression& e) {
         const auto op = e.op();
@@ -579,11 +684,67 @@ public:
         handle_and_convert(e.e(), e.et());
     }
 
+    void push_fp(const std::string& reg = "XMM0") {
+        emit("SUB", "RSP", 8);
+        emit("MOVSD", "[RSP]", reg);
+    }
+
+    void pop_fp(const std::string& reg = "") {
+        if (!reg.empty()) {
+            emit("MOVSD", reg, "[RSP]");
+        }
+        emit("ADD", "RSP", 8);
+    }
+
+    void handle_fp_op(const binary_expression& e) {
+        const auto& ct = e.common_t();
+        handle_and_convert(e.r(), ct);
+        push_fp();
+
+        const auto suffix = ct->base() == ctype::float_t ? "SS" : "SD";
+
+        if (is_assignment_op(e.op())) {
+            handle(e.l());
+
+            if (e.op() == token_type::eq) {
+                pop_fp("XMM0");
+            } else {
+                handle_load(ct);
+                emit(arit_op_name(without_assignment(e.op()), true) + suffix, "XMM0", "[RSP]");
+                pop_fp();
+            }
+            handle_store("[RAX]", ct);
+            return;
+        }
+
+
+        handle_and_convert(e.l(), ct);
+
+        std::string inst;
+        if (is_comparison_op(e.op())) {
+            inst = "UCOMI";
+        } else {
+            inst = arit_op_name(e.op(), true);
+        }
+        emit(inst + suffix, "XMM0", "[RSP]");
+        if (is_comparison_op(e.op())) {
+            const auto l = make_label();
+            // Return false if parity set (result unordered)
+            emit("XOR", "EAX", "EAX");
+            emit("JP", l);
+            emit("SET" + std::string(compare_cond(e.op(), true)), "AL");
+            emit_label(l);
+        }
+        pop_fp();
+    }
+
     void operator()(const binary_expression& e) {
         const auto op = e.op();
 
         if (op == token_type::comma) {
-            NOT_IMPLEMENTED(e);
+            handle(e.l());
+            handle(e.r());
+            return;
         }
 
         const auto& ct = e.common_t();
@@ -600,8 +761,27 @@ public:
             return;
         }
 
+        if (is_floating_point(ct->ct())) {
+            handle_fp_op(e);
+            return;
+        }
+
+        if ((ct->base() == ctype::struct_t || ct->base() == ctype::union_t) && e.op() == token_type::eq) {
+            handle(e.r());
+            emit("PUSH RAX");
+            handle(e.l());
+            emit("MOV", "RDI", "RAX");
+            emit("POP", "RSI");
+            NEXT_COMMENT("Copy " << *ct);
+            emit_copy(sizeof_type(*ct));
+            return;
+        }
+
+        if (ct->base() != ctype::pointer_t && !is_integral(ct->base())) {
+            NOT_IMPLEMENTED(e << " : " << *ct);
+        }
+
         if (is_comparison_op(op)) {
-            if (!is_integral(ct->base())) NOT_IMPLEMENTED(e);
             handle_and_convert(e.r(), ct);
             emit("PUSH", "RAX");
             handle_and_convert(e.l(), ct);
@@ -611,9 +791,7 @@ public:
         }
 
         if (is_assignment_op(op)) {
-            if (!is_integral(ct->base())) NOT_IMPLEMENTED(e);
-
-            handle_and_convert(e.r(), ct);
+            handle_and_convert(e.r(), ct, op != token_type::eq);
             emit("PUSH", "RAX");
             handle(e.l());
             emit("MOV", "RCX", "RAX");
@@ -629,9 +807,9 @@ public:
             return;
         }
 
-        handle_and_convert(e.r(), ct);
+        handle_and_convert(e.r(), ct, true);
         emit("PUSH", "RAX");
-        handle_and_convert(e.l(), ct);
+        handle_and_convert(e.l(), ct, true);
         emit("POP", "RDX");
         handle_arit_op(op, ct);
     }
@@ -655,9 +833,9 @@ public:
     //
     // Statement
     //
-    void operator()(const empty_statement& s) {
-        (void)s;
+    void operator()(const empty_statement&) {
     }
+
     void operator()(const declaration_statement& s) {
         for (const auto& ds: s.ds()) {
             if (!ds->has_init_val()) {
@@ -666,26 +844,59 @@ public:
             NEXT_COMMENT(ds->sym().id());
             const auto& si = find_sym(ds->sym());
             const auto& t = si.sym->decl_type();
-            if (is_integral(t->base())) {
+            if (is_integral(t->base()) || t->base() == ctype::pointer_t) {
                 handle_and_convert(ds->init_expr(), t);
                 handle_store(rbp_str(si.offset), t);
-            } else if (t->base() == ctype::array_t) {
-                assert(ds->init_expr().et()->base() == ctype::reference_t && ds->init_expr().et()->reference_val()->base() == ctype::array_t);
-                if (ds->init_expr().et()->reference_val()->array_val().bound() == array_info::unbounded) {
-                    NOT_IMPLEMENTED(*ds);
-                }
-                const auto size = sizeof_type(*ds->init_expr().et()->reference_val());
-                handle(ds->init_expr());
-                emit("MOV", "RSI", "RAX");
-                emit("LEA", "RDI", rbp_str(si.offset));
-                emit("MOV", "RCX", size);
-                emit("REP", "MOVSB");
             } else {
-                NOT_IMPLEMENTED(*t);
+                if (dynamic_cast<const initializer_expression*>(&ds->init_expr())) {
+                    emit_section_change("rodata");
+                    const auto l = make_label();
+                    emit_label(l);
+                    emit_initializer(*t, ds->init_expr());
+                    emit_section_change("code");
+                    emit("MOV", "RSI", l);
+                } else {
+                    handle(ds->init_expr());
+                    emit("MOV", "RSI", "RAX");
+                }
+                emit("LEA", "RDI", rbp_str(si.offset));
+                emit_copy(sizeof_type(*t));
             }
         }
     }
-    void operator()(const labeled_statement& s) { NOT_IMPLEMENTED(s); }
+    void operator()(const labeled_statement& s) {
+        if (s.is_case_label()) {
+            const auto l = make_label();
+            const auto v = const_int_eval(s.e());
+            NEXT_COMMENT("case " << v);
+            emit_label(l);
+            if (!switches_) NOT_IMPLEMENTED("case outside switch");
+            assert(break_labels_);
+            switches_->add_case(v, l);
+            handle(s.s());
+            emit("JMP", break_labels_->label());
+            return;
+        } else if (s.is_default_label()) {
+            const auto l = make_label();
+            NEXT_COMMENT("default");
+            emit_label(l);
+            if (!switches_) NOT_IMPLEMENTED("default outside switch");
+            assert(break_labels_);
+            switches_->add_default(l);
+            handle(s.s());
+            emit("JMP", break_labels_->label());
+            return;
+        } else {
+            assert(s.is_normal_label());
+            const auto& id = s.label().id();
+            NEXT_COMMENT(id);
+            assert(local_labels_.find(id) != local_labels_.end());
+            emit_label(local_labels_[id]);
+            handle(s.s());
+            return;
+        }
+        NOT_IMPLEMENTED(s);
+    }
     void operator()(const compound_statement& s) {
         for (const auto& s2: s.ss()) {
             handle(*s2);
@@ -712,10 +923,36 @@ public:
         NEXT_COMMENT("if end");
         emit_label(l_end);
     }
-    void operator()(const switch_statement& s) { NOT_IMPLEMENTED(s); }
+    void operator()(const switch_statement& s) {
+        const auto l_end   = make_label();
+        const auto l_e    = make_label();
+        switch_stack_node sn{switches_};
+        label_stack_node bl{break_labels_, l_end};
+        const auto t = decay(s.e().et());
+        NEXT_COMMENT("switch begin");
+        emit("JMP", l_e);
+        handle(s.s());
+        NEXT_COMMENT("switch e");
+        emit_label(l_e);
+        handle_and_convert(s.e(), t);
+        const auto r = reg_name_for_type(t->ct());
+        for (const auto& c: sn.cases()) {
+            emit("CMP", r, cast(c.first, t->ct()));
+            emit("JE", c.second);
+        }
+
+        if (auto l = sn.default_label(); !l.empty()) {
+            emit("JMP", l);
+        }
+
+        NEXT_COMMENT("switch end");
+        emit_label(l_end);
+    }
     void operator()(const while_statement& s) {
         const auto l_start = make_label();
         const auto l_end   = make_label();
+        label_stack_node bl{break_labels_, l_end};
+        label_stack_node cl{continue_labels_, l_end};
         NEXT_COMMENT("while cond");
         emit_label(l_start);
         handle(s.cond());
@@ -727,11 +964,29 @@ public:
         NEXT_COMMENT("while end");
         emit_label(l_end);
     }
-    void operator()(const do_statement& s) { NOT_IMPLEMENTED(s); }
+    void operator()(const do_statement& s) {
+        const auto l_start = make_label();
+        const auto l_cond = make_label();
+        const auto l_end   = make_label();
+        label_stack_node bl{break_labels_, l_end};
+        label_stack_node cl{continue_labels_, l_cond};
+        NEXT_COMMENT("do start");
+        emit_label(l_start);
+        handle(s.s());
+        NEXT_COMMENT("do cond");
+        emit_label(l_cond);
+        handle(s.cond());
+        emit("TEST", "AL", "AL");
+        emit("JNZ", l_start);
+        NEXT_COMMENT("do end");
+        emit_label(l_end);
+    }
     void operator()(const for_statement& s) {
         handle(s.init());
         const auto l_start = make_label();
         const auto l_end   = make_label();
+        label_stack_node bl{break_labels_, l_end};
+        label_stack_node cl{continue_labels_, l_end};
         NEXT_COMMENT("for cond");
         emit_label(l_start);
         if (s.cond()) {
@@ -749,9 +1004,26 @@ public:
         NEXT_COMMENT("for end");
         emit_label(l_end);
     }
-    void operator()(const goto_statement& s) { NOT_IMPLEMENTED(s); }
-    void operator()(const continue_statement& s) { NOT_IMPLEMENTED(s); }
-    void operator()(const break_statement& s) { NOT_IMPLEMENTED(s); }
+    void operator()(const goto_statement& s) {
+        auto it = local_labels_.find(s.target().id());
+        if (it == local_labels_.end()) {
+            NOT_IMPLEMENTED(s);
+        }
+        NEXT_COMMENT("goto " << it->first);
+        emit("JMP", it->second);
+    }
+    void operator()(const continue_statement&) {
+        if (!continue_labels_) {
+            NOT_IMPLEMENTED("continue outside loop");
+        }
+        emit("JMP", continue_labels_->label());
+    }
+    void operator()(const break_statement&) {
+        if (!break_labels_) {
+            NOT_IMPLEMENTED("break outside loop");
+        }
+        emit("JMP", break_labels_->label());
+    }
     void operator()(const return_statement& s) {
         assert(!end_label_.empty());
         if (s.e()) {
@@ -761,6 +1033,58 @@ public:
     }
 
 private:
+    class label_stack_node {
+    public:
+        explicit label_stack_node(label_stack_node*& s, const std::string& label) : s_{s}, prev_{s_}, label_{label} {
+            s_ = this;
+        }
+        label_stack_node(const label_stack_node&) = delete;
+        label_stack_node& operator=(const label_stack_node&) = delete;
+        ~label_stack_node() {
+            assert(s_ == this);
+            s_ = prev_;
+        }
+        const std::string& label() const { return label_; }
+    private:
+        label_stack_node*& s_;
+        label_stack_node*  prev_;
+        std::string label_;
+    };
+    class switch_stack_node {
+    public:
+        explicit switch_stack_node(switch_stack_node*& s) : s_{s}, prev_{s_} {
+            s_ = this;
+        }
+        switch_stack_node(const switch_stack_node&) = delete;
+        switch_stack_node& operator=(const switch_stack_node&) = delete;
+        ~switch_stack_node() {
+            assert(s_ == this);
+            s_ = prev_;
+        }
+
+        const std::string& default_label() const { return default_; }
+        const std::map<const_int_val, std::string>& cases() const { return cases_; }
+
+        void add_case(const const_int_val& val, const std::string& label) {
+            assert(!label.empty());
+            if (auto [it, inserted] = cases_.emplace(val, label); !inserted) {
+                NOT_IMPLEMENTED("Duplicate case label for " << val << " " << it->second << " and " << label);
+            }
+        }
+        void add_default(const std::string& label) {
+            assert(!label.empty());
+            if (!default_.empty()) {
+                NOT_IMPLEMENTED("Duplicate default labels");
+            }
+            default_ = label;
+        }
+
+    private:
+        switch_stack_node*& s_;
+        switch_stack_node*  prev_;
+        std::map<const_int_val, std::string> cases_;
+        std::string default_;
+    };
     struct sym_info {
         const symbol* sym;
         int offset;
@@ -768,8 +1092,12 @@ private:
     std::vector<sym_info> syms_;
     int next_label_ = 0;
     std::string end_label_;
+    std::map<std::string, std::string> local_labels_;
     type_ptr func_ret_type_;
     std::map<std::string, std::string> string_literals_;
+    label_stack_node* break_labels_ = nullptr;
+    label_stack_node* continue_labels_ = nullptr;
+    switch_stack_node* switches_ = nullptr;
 
     std::string add_string_lit(const std::string& text) {
         if (auto it = string_literals_.find(text); it != string_literals_.end()) {
@@ -833,9 +1161,15 @@ private:
         emit("PUSH", "RBP");
         emit("MOV", "RBP", "RSP");
 
+        assert(local_labels_.empty());
         int offset = 0x10;
         int arg_cnt = 0;
         for (const auto& s: scope_symbols(d.local_scope())) {
+            if (!s->decl_type()) {
+                assert(local_labels_.find(s->id()) == local_labels_.end());
+                local_labels_.emplace(s->id(), make_label());
+                continue;
+            }
             const auto& t = s->decl_type();
             const auto align = alignof_type(*t);
             const auto size  = sizeof_type(*t);
@@ -843,9 +1177,10 @@ private:
             add_sym(*s, offset);
 
             if (arg_cnt < 4) {
-                if (!is_integral(t->base()) && t->base() != ctype::pointer_t && t->base() != ctype::array_t) NOT_IMPLEMENTED(decl(t, s->id()));
-                NEXT_COMMENT(s->id());
-                emit("MOV", rbp_str(offset), arg_regs[arg_cnt]);
+                if (!is_arithmetic(t->base()) && t->base() != ctype::pointer_t && t->base() != ctype::array_t) NOT_IMPLEMENTED(decl(t, s->id()));
+                NEXT_COMMENT(s->id());                
+                const bool int_arg = is_integral(t->base());
+                emit(int_arg ? "MOV" : "MOVSD", rbp_str(offset), arg_reg_name(arg_cnt, int_arg));
             }
 
             offset += static_cast<int>(round_up(size, 8));
@@ -863,12 +1198,13 @@ private:
         emit_label(end_label_);
         end_label_.clear();
         func_ret_type_.reset();
+        local_labels_.clear();
         emit("MOV", "RSP", "RBP");
         emit("POP", "RBP");
         emit("RET");                
     }
 
-    void emit_string_literal(const std::string& text) {
+    void emit_string_literal(const std::string& text, size_t min_size) {
         std::ostringstream oss;
         std::string accum;
         auto dump_str = [&]() {
@@ -892,6 +1228,9 @@ private:
         dump_str();
         if (!oss.str().empty())
             oss << ", ";
+        for (size_t i = text.size() + 1; i < min_size; ++i) {
+            oss << "0, ";
+        }
         oss << "0";
 
         emit("DB", oss.str());
@@ -904,10 +1243,10 @@ private:
                NOT_IMPLEMENTED(t << " " << init);
            }
            if (auto sl = dynamic_cast<const string_lit_expression*>(&init)) {
-               if (sizeof_type(*av.t()) != 1 || av.bound() != sl->text().size() + 1) {
+               if (sizeof_type(*av.t()) != 1) {
                    NOT_IMPLEMENTED(t << " " << init);
                }
-               emit_string_literal(sl->text());
+               emit_string_literal(sl->text(), av.bound());
                return;
            } else if (auto il = dynamic_cast<const initializer_expression*>(&init)) {
                const int64_t missing = static_cast<int64_t>(av.bound()) - static_cast<int64_t>(il->es().size());
@@ -954,20 +1293,23 @@ private:
                 emit_zeros(extra);
             }
             return;
-        } else if (t.base() >= ctype::pointer_t) {
-           if (auto sl = dynamic_cast<const string_lit_expression*>(&init)) {
-               if (sizeof_type(*t.pointer_val()) != 1) {
-                   NOT_IMPLEMENTED(t << " " << init);
-               }
-               emit("D"+data_decl_suffix(t.ct()), add_string_lit(sl->text()));
-               return;
-           } else if (auto ce = dynamic_cast<const cast_expression*>(&init); ce && ce->et()->base() == ctype::pointer_t) {
-               // HACK HACK
-               const auto ival = const_int_eval(ce->e());
-               emit("D"+data_decl_suffix(t.ct()), ival);
-               return;
-           }
-           NOT_IMPLEMENTED(t << " " << init);
+        } else if (t.base() == ctype::pointer_t) {
+            if (auto sl = dynamic_cast<const string_lit_expression*>(&init)) {
+                if (sizeof_type(*t.pointer_val()) != 1) {
+                    NOT_IMPLEMENTED(t << " " << init);
+                }
+                emit("DQ", add_string_lit(sl->text()));
+                return;
+            } else if (auto ce = dynamic_cast<const cast_expression*>(&init); ce && ce->et()->base() == ctype::pointer_t) {
+                // HACK HACK
+                const auto ival = const_int_eval(ce->e());
+                emit("DQ", ival);
+                return;
+            }
+            emit("DQ", const_int_eval(init).val);
+            return;
+        } else if (!is_integral(t.base())) {
+            NOT_IMPLEMENTED(t << " " << init);
         }
 
         emit("D"+data_decl_suffix(t.ct()), const_int_eval(init).val);
@@ -980,51 +1322,28 @@ private:
         return !!(t.ct() & ctype::const_f);
     }
 
-    void handle_global_data(const init_decl& id) {
-       const auto& t = *id.d().t();
-       const auto l = name_mangle(id.d().id());
-       if (!id.has_init_val()) {
+    void handle_global_data(const symbol& sym) {
+        const auto& t = *sym.decl_type();
+        const auto l = name_mangle(sym.id());
+        if (!sym.definition() || !sym.definition()->has_init_val()) {
             emit_section_change("bss");
             emit_label(l);
             emit("RESB", sizeof_type(t));
             return;
-       }       
-       
-       emit_section_change(is_const_init_type(t) ? "rodata" : "data");
-       NEXT_COMMENT(id.d());
-       emit_label(l);
-       emit_initializer(t, id.init_expr());
-       /*
+        }
 
-       if (t->base() == ctype::array_t) {
-           const auto& av = t->array_val();
-           if (av.bound() == array_info::unbounded || av.t()->base() >= ctype::pointer_t) {
-               NOT_IMPLEMENTED(id.d());
-           }
-           if (auto sl = dynamic_cast<const string_lit_expression*>(&id.init_expr())) {
-               assert(sizeof_type(av.t()) == 1);
-               emit_string_literal(sl->text(), l);
-               return;
-           } else if (auto il = dynamic_cast<const initializer_expression*>(&id.init_expr())) {
-               std::cout << il->es().size() << " is the size\n";
-           }
+        emit_section_change(is_const_init_type(t) ? "rodata" : "data");
+        NEXT_COMMENT(sym.definition()->d());
+        emit_label(l);
+        emit_initializer(t, sym.definition()->init_expr());
+    }
 
-           std::cout << "TODO: D" << data_decl_suffix(av.t()->ct()) << "\n";
-           std::cout << id.init_expr() << "\n";
-           NOT_IMPLEMENTED("FIXME");
-           return;
-       }
-
-       if (t->base() >= ctype::pointer_t) {
-           NOT_IMPLEMENTED(id.d());
-       }*/
-   }
-
-   void handle_conversion(const type_ptr& dst, const type_ptr& src) {
-        if (types_equal(*dst, *src)) {
+   void handle_conversion(const type_ptr& dst, const type_ptr& src, bool scale_pointers = false) {
+        if (dst->base() == ctype::pointer_t && src->base() == ctype::pointer_t) {
+            // Assume types have been checked elsewhere
             return;
         }
-        if (dst->base() == ctype::pointer_t && src->base() == ctype::pointer_t && is_compatible_pointer_type(dst->pointer_val(), src->pointer_val())) {
+        if (types_equal(*dst, *src)) {
             return;
         }
         assert(dst->base() != ctype::reference_t);
@@ -1034,46 +1353,113 @@ private:
                 if (dst->base() != ctype::pointer_t) {
                     NOT_IMPLEMENTED("Conversion from " << *rt << " (" << *src << ") to " << *dst);
                 }
+            } else if (rt->base() == ctype::function_t) {
+                if (dst->base() != ctype::pointer_t) {
+                    NOT_IMPLEMENTED("Conversion from " << *rt << " (" << *src << ") to " << *dst);
+                }
             } else {
                 handle_load(rt);
-                handle_conversion(dst, rt);
+                handle_conversion(dst, rt, scale_pointers);
             }
             return;
         }
         NEXT_COMMENT("Conversion from " << *src << " to " << *dst);
 
-        if (is_arithmetic(src->base()) && is_arithmetic(dst->base())) {
-            if (src->base() < dst->base()) {
-                emit(unsigned_arit(*src) ? "MOVZX" : "MOVSX", "RAX", reg_name_for_type(src->ct()));
+        if (dst->base() == ctype::bool_t) {
+            const auto r = reg_name_for_type(src->ct());
+            emit("TEST", r, r);
+            emit("SETNZ", "AL");
+            return;
+        }
+
+        auto extend_int = [&src](bool zero_ext) {
+            if (zero_ext && src->base() >= ctype::int_t) {
+                // MOVZX RAX, EAX isn't valid
+                return;
             }
+            emit(zero_ext ? "MOVZX" : "MOVSX", "RAX", reg_name_for_type(src->ct()));
+        };
+
+        if (is_integral(src->base()) && is_integral(dst->base())) {
+            if (src->base() < dst->base()) {
+                extend_int(unsigned_arit(dst->ct()));
+            }
+            return;
+        }
+
+        if (src->base() == ctype::pointer_t && is_integral(dst->base())) {
             return;
         }
 
         if (dst->base() == ctype::pointer_t && is_integral(src->base())) {
+            if (src->base() < ctype::long_long_t) {
+                extend_int(true);
+            }
             // Must be pointer arithmetic
-            const auto element_size = sizeof_type(*dst->pointer_val());
-            if (element_size > 1) {
-                emit("IMUL", "RAX", element_size);
+            if (scale_pointers) {
+                const auto element_size = sizeof_type(*dst->pointer_val());
+                if (element_size > 1) {
+                    emit("IMUL", "RAX", element_size);
+                }
             }
             return;
         }
-        
 
-        NOT_IMPLEMENTED("conversion from " << *src << " to " << *dst);
+        if (is_floating_point(dst->ct())) {
+            const std::string suffix = dst->base() == ctype::float_t ? "S" : "D";
+            if (is_integral(src->base())) {
+                if (src->base() < ctype::int_t) {
+                    extend_int(!!(src->base() & ctype::unsigned_f));
+                }
+                emit("CVTSI2S" + suffix, "XMM0", src->base() <= ctype::int_t ? "EAX" : "RAX");
+                return;
+            } else if (src->base() == ctype::float_t) {
+                assert(suffix == "D");
+                emit("CVTSD2SS", "XMM0", "XMM0");
+                return;
+            } else if (src->base() == ctype::double_t || src->base() == ctype::long_double_t) {
+                if (dst->base() == ctype::float_t) {
+                    emit("CVTSS2SD", "XMM0", "XMM0");
+                }
+                return;
+            }
+        }
+
+        if (is_floating_point(src->ct()) && is_integral(dst->ct())) {
+            const std::string suffix = src->base() == ctype::float_t ? "S" : "D";
+            emit("CVTS" + suffix + "2SI", dst->base() <= ctype::int_t ? "EAX" : "RAX", "XMM0");
+            return;
+        }
+
+        
+        NOT_IMPLEMENTED("conversion from " << *src << " to " << *dst << " scale_pointers = " << scale_pointers);
    }
 
-    void handle_and_convert(const expression& e, const type_ptr& t) {
+    void handle_and_convert(const expression& e, const type_ptr& t, bool scale_pointers = false) {
         handle(e);
-        handle_conversion(t, e.et());
+        handle_conversion(t, e.et(), scale_pointers);
     }
 
     void handle_load_store(const std::string& addr, const type_ptr& t, bool is_store) {
-        std::string r = reg_name_for_type(t->base());
         if (is_store) {
             NEXT_COMMENT("Store as " << *t);
-            emit("MOV", addr, r);
         } else {
             NEXT_COMMENT("Load as " << *t);
+        }
+        if (is_floating_point(t->base())) {
+            const auto inst = t->base() == ctype::float_t ? "MOVSS" : "MOVSD";
+            if (is_store) {
+                emit(inst, addr, "XMM0");
+            } else {
+                emit(inst, "XMM0", addr);
+            }
+            return;
+        }
+
+        std::string r = reg_name_for_type(t->base());
+        if (is_store) {
+            emit("MOV", addr, r);
+        } else {
             emit("MOV", r, addr);
         }
     }
@@ -1093,11 +1479,11 @@ private:
     // Assumes ops in RAX,RDX (for int/pointer values)
     void handle_compare(token_type op, const type_ptr& t) {
         const auto b = t->base();
-        if (!is_integral(b)) {
+        if (!is_integral(b) && b != ctype::pointer_t) {
             NOT_IMPLEMENTED(op << " " << *t);
         }
         emit("CMP", reg_name_for_type(b, RAX), reg_name_for_type(b, RDX));
-        emit("SET" + std::string(compare_cond(op, unsigned_arit(*t))), "AL");
+        emit("SET" + std::string(compare_cond(op, unsigned_arit(t->ct()))), "AL");
     }
     // Assumes ops in RAX,RDX (for int/pointer values)
     void handle_arit_op(token_type op, const type_ptr& t) {
@@ -1105,7 +1491,18 @@ private:
         if (!is_integral(b) && b != ctype::pointer_t) {
             NOT_IMPLEMENTED(op << " " << *t);
         }
-        emit(arit_op_name(op, unsigned_arit(*t)), reg_name_for_type(b, RAX), reg_name_for_type(b, RDX));
+        const auto inst = arit_op_name(op, unsigned_arit(t->ct()));
+        if (op == token_type::star || op == token_type::div || op == token_type::mod) {
+            emit(inst, reg_name_for_type(b, RDX));
+            if (op == token_type::mod) {
+                emit("MOV", "RAX", "RDX");
+            }
+        } else if (op == token_type::lshift || op == token_type::rshift) {
+            emit("MOV", "RCX", "RDX");
+            emit(inst, reg_name_for_type(b, RAX), "CL");
+        } else {
+            emit(inst, reg_name_for_type(b, RAX), reg_name_for_type(b, RDX));
+        }
     }
 
     void handle_incr_decr(token_type op, const type_ptr& t, bool is_prefix) {

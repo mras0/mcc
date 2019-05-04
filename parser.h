@@ -52,7 +52,7 @@ private:
     init_decl*          definition_;
     const_int_val       civ_;
     int                 label_state_;
-    bool                referenced_;
+    bool                referenced_ = false;
 
     friend scope;
     friend parser;
@@ -391,6 +391,7 @@ public:
     bool is_normal_label()  const { return val_.index() == 1; }
 
     const symbol& label() const { assert(is_normal_label()); return *std::get<1>(val_); }
+    const expression& e() const { assert(is_case_label()); return *std::get<2>(val_); }
 
 private:
     std::variant<std::monostate, const symbol*, expression_ptr> val_;

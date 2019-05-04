@@ -86,6 +86,11 @@ int operator_precedence(token_type t) {
     }
 }
 
+bool is_right_associative(token_type t) {
+    // HACK
+    return operator_precedence(t) == operator_precedence(token_type::question);
+}
+
 bool is_assignment_op(token_type t) {
     switch (t) {
     case token_type::eq:
@@ -132,14 +137,24 @@ bool is_comparison_op(token_type op) {
         || op == token_type::gteq;
 }
 
+template<typename T>
+void print_as(std::ostream& os, uint64_t v) {
+    if constexpr (sizeof(T) == 1) {
+        os << static_cast<int>(static_cast<T>(v));
+    } else {
+        os << static_cast<T>(v);
+    }
+}
+
 std::ostream& operator<<(std::ostream& os, const_int_val civ) {
     switch (static_cast<uint32_t>(civ.type)) {
-#define CT(ct, rt) case static_cast<uint32_t>(ctype::ct): os << static_cast<signed rt>(static_cast<int64_t>(civ.val)); break; \
-                   case static_cast<uint32_t>(ctype::ct|ctype::unsigned_f): os << static_cast<unsigned rt>(civ.val); break
+#define CT(ct, rt) case static_cast<uint32_t>(ctype::ct): print_as<signed rt>(os, civ.val); break; \
+                   case static_cast<uint32_t>(ctype::ct|ctype::unsigned_f): print_as<unsigned rt>(os, civ.val); break
         CT(char_t, char);
+        CT(plain_char_t, char);
         CT(short_t, short);
         CT(int_t, int);
-        CT(long_t, long);
+        CT(long_t, int);
         CT(long_long_t, long long);
 #undef CT
     default:
@@ -148,7 +163,20 @@ std::ostream& operator<<(std::ostream& os, const_int_val civ) {
     return os;
 }
 
+template<typename T>
+const_int_val chop(uint64_t v, ctype new_type) {
+    if (!(new_type & ctype::unsigned_f)) {
+        v = static_cast<uint64_t>(static_cast<int64_t>(static_cast<std::make_signed_t<T>>(static_cast<T>(v))));
+    } else {
+        v = static_cast<T>(v);
+    }
+    return const_int_val{v, new_type};
+}
+
 const_int_val cast(const const_int_val& val, ctype new_type) {
+    if (!!(new_type & ctype::storage_f)) {
+        NOT_IMPLEMENTED(new_type);
+    }
     if (val.type == new_type) {
         return val;
     }
@@ -157,10 +185,25 @@ const_int_val cast(const const_int_val& val, ctype new_type) {
     }
     const_int_val res{val.val, new_type};
     if (base_type(val.type) > base_type(new_type)) {
-        // Chop off bits while maintaining invariants
-        NOT_IMPLEMENTED(val << " " << new_type);
+        switch (base_type(new_type)) {
+        case ctype::char_t:
+        case ctype::plain_char_t:
+            return chop<uint8_t>(val.val, new_type);
+        case ctype::short_t:
+            return chop<uint16_t>(val.val, new_type);
+        case ctype::int_t:
+        case ctype::long_t:
+            return chop<uint32_t>(val.val, new_type);
+        default:
+            NOT_IMPLEMENTED(val << " " << new_type);
+        }
     }
     return res;
+}
+
+bool operator<(const const_int_val& l, const const_int_val& r) {
+    const auto ct = common_type(l.type, r.type);
+    return cast(l, ct).val < cast(r, ct).val;
 }
 
 std::ostream& operator<<(std::ostream& os, const token& t) {
