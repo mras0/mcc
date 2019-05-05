@@ -605,7 +605,7 @@ public:
         const auto& si = find_sym(e.sym());
         NEXT_COMMENT(e.sym().id());
         if (!si.offset) {
-            emit("MOV", RAX, name_mangle(si.sym->id()));
+            emit("MOV", RAX, "OFFSET " + name_mangle(si.sym->id()));
         } else {
             emit("LEA", RAX, rbp_str(si.offset));
         }
@@ -632,7 +632,7 @@ public:
         emit("MOVSD", XMM0, "[" + l + "]");
     }
     void operator()(const string_lit_expression& e) {
-        emit("MOV", RAX, add_string_lit(e.text()));
+        emit("MOV", RAX, "OFFSET " + add_string_lit(e.text()));
     }
     void operator()(const initializer_expression& e) {
         if (e.et()->base() != ctype::reference_t || e.et()->reference_val()->base() != ctype::array_t) {
@@ -705,14 +705,14 @@ public:
                 NOT_IMPLEMENTED(*args[i].t);
             }
             handle_and_convert(*e.args()[i], args[i].t);
-            const bool int_arg = is_integral(bt);
+            const bool int_arg = !is_floating_point(bt);
             emit(int_arg ? "MOV" : "MOVSD", reg_off_str(reg_name::RSP, args[i].offset), int_arg ? RAX : XMM0);
         }
 
         handle(e.f());
         if(!e.args().empty()){
             for (size_t i = 0; i < std::min(4ULL, e.args().size()); ++i) {
-                const bool int_arg = is_integral(args[i].t->base());
+                const bool int_arg = !is_floating_point(args[i].t->base());
                 emit(int_arg ? "MOV" : "MOVSD", arg_reg(static_cast<int>(i), int_arg), reg_off_str(reg_name::RSP, args[i].offset));
             }
         }
@@ -887,6 +887,8 @@ public:
         }
 
         if ((ct->base() == ctype::struct_t || ct->base() == ctype::union_t) && e.op() == token_type::eq) {
+            emit("PUSH", RDI);
+            emit("PUSH", RSI);
             handle(e.r());
             emit("PUSH", RAX);
             handle(e.l());
@@ -894,6 +896,8 @@ public:
             emit("POP", RSI);
             NEXT_COMMENT("Copy " << *ct);
             emit_copy(sizeof_type(*ct));
+            emit("POP", RSI);
+            emit("POP", RDI);
             return;
         }
 
@@ -968,6 +972,8 @@ public:
                 handle_and_convert(ds->init_expr(), t);
                 handle_store(rbp_str(si.offset), t);
             } else {
+                emit("PUSH", RDI);
+                emit("PUSH", RSI);
                 if (dynamic_cast<const initializer_expression*>(&ds->init_expr())) {
                     emit_section_change("rodata");
                     const auto l = make_label();
@@ -981,6 +987,8 @@ public:
                 }
                 emit("LEA", RDI, rbp_str(si.offset));
                 emit_copy(sizeof_type(*t));
+                emit("POP", RSI);
+                emit("POP", RDI);
             }
         }
     }
@@ -1298,7 +1306,7 @@ private:
             if (arg_cnt < 4) {
                 if (!is_arithmetic(t->base()) && t->base() != ctype::pointer_t && t->base() != ctype::array_t) NOT_IMPLEMENTED(decl(t, s->id()));
                 NEXT_COMMENT(s->id());
-                const bool int_arg = is_integral(t->base());
+                const bool int_arg = !is_floating_point(t->base());
                 emit(int_arg ? "MOV" : "MOVSD", rbp_str(offset), arg_reg(arg_cnt, int_arg));
             }
 
