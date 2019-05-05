@@ -179,9 +179,14 @@ std::ostream& operator<<(std::ostream& os, conditional_state s) {
     NOT_IMPLEMENTED((int)s);
 }
 
+#define LEX_ERROR(args) NOT_IMPLEMENTED(position() << ": " << args)
+
 class pp_lexer {
 public:
     explicit pp_lexer(const source_file& source) : source_{source} {
+#ifdef PP_DEBUG
+        std::cout << "\n";
+#endif
         next();
     }
     pp_lexer(const pp_lexer&) = delete;
@@ -219,7 +224,7 @@ public:
                 ++index_;
                 for (bool has_star = false;; ++index_) {
                     if (index_ >= t.size()) {
-                        NOT_IMPLEMENTED("EOF in comment");
+                        LEX_ERROR("EOF in comment");
                     }
                     if (line_comment) {
                         if (t[index_] == '\n') break;
@@ -236,7 +241,7 @@ public:
                 }
             } else if (ch == '\\') {
                 // Handle line-continuation
-                if (index_ >= t.size()) NOT_IMPLEMENTED("backslash at en of file");
+                if (index_ >= t.size()) LEX_ERROR("backslash at en of file");
                 if (t[index_] == '\n') {
                     ++index_;
                     continue;
@@ -245,7 +250,7 @@ public:
                     index_ += 2;
                     continue;
                 }
-                NOT_IMPLEMENTED(quoted(t.substr(start_index, index_ - start_index)));
+                LEX_ERROR(quoted(t.substr(start_index, index_ - start_index)));
             } else if (ch == '\n') {
                 type = pp_token_type::newline;
             } else if (is_whitespace_non_nl(ch)) {
@@ -273,12 +278,12 @@ public:
                         if (is_digit(here)) {
                         } else if (here == '.') {
                             if (has_dot) {
-                                NOT_IMPLEMENTED("Invalid number");
+                                LEX_ERROR("Invalid number");
                             }
                             has_dot = true;
                         } else if ((here|0x20) == 'e') {
                             if (has_exp) {
-                                NOT_IMPLEMENTED("Invalid number");
+                                LEX_ERROR("Invalid number");
                             }
                             has_exp = true;
                         } else if (here == '+' || here == '-') {
@@ -308,7 +313,7 @@ public:
                 type = ch == '\'' ? pp_token_type::character_constant : pp_token_type::string_literal;
                 for (bool quote = false;; ++index_) {
                     if (index_ >= t.size()) {
-                        NOT_IMPLEMENTED("EOF in char/string literal");
+                        LEX_ERROR("EOF in char/string literal");
                     } else if (quote) {
                         quote = false;
                     } else if (t[index_] == '\\') {
@@ -322,7 +327,7 @@ public:
                 type = pp_token_type::punctuation;
                 index_ += punct_length(std::string_view{&t[index_-1], t.size()-index_+1}) - 1;
             } else {
-                NOT_IMPLEMENTED(quoted(t.substr(start_index, index_ - start_index)));
+                LEX_ERROR(quoted(t.substr(start_index, index_ - start_index)));
             }
             current_ = pp_token{type, t.substr(start_index, index_ - start_index)};
             break;
@@ -335,12 +340,12 @@ public:
         int state_char = -1;
         for (;; ++index_) {
             if (index_ >= t.size()) {
-                NOT_IMPLEMENTED("EOF while scanning filename for #include directive");
+                LEX_ERROR("EOF while scanning filename for #include directive");
             }
 
             const auto ch = static_cast<uint8_t>(t[index_]);
             if (ch == '\n') {
-                NOT_IMPLEMENTED("newline while scanning filename for #include directive");
+                LEX_ERROR("newline while scanning filename for #include directive");
             } else if (state_char < 0) {
                 if (is_whitespace(ch)) {
                     continue;
@@ -349,7 +354,7 @@ public:
                 } else if (ch == '<') {
                     state_char = '>';
                 } else {
-                    NOT_IMPLEMENTED("Unexpected character while scanning for filename in #include directive: " << ch);
+                    LEX_ERROR("Unexpected character while scanning for filename in #include directive: " << ch);
                 }
                 res += ch;
             } else {
@@ -378,7 +383,7 @@ private:
     }
 };
 
-#define EXPECT_PUNCT(punct) do { if (current_.type() != pp_token_type::punctuation || current_.text() != punct) { NOT_IMPLEMENTED("Expected '" << punct << "' got " << current_); } internal_next(); } while (0)
+#define EXPECT_PUNCT(punct) do { if (current_.type() != pp_token_type::punctuation || current_.text() != punct) { LEX_ERROR("Expected '" << punct << "' got " << current_); } internal_next(); } while (0)
 
 class preprocessor::impl {
 public:
@@ -416,10 +421,10 @@ public:
             if (internal_next()) {
                 if (!current_) {
                     if (!conds_.empty()) {
-                        NOT_IMPLEMENTED("Open #if/#ifdef block!");
+                        LEX_ERROR("Open #if/#ifdef block!");
                     }
                     if (files_.size() != 1) {
-                        NOT_IMPLEMENTED("Multiple files open?");
+                        LEX_ERROR("Multiple files open?");
                     }
                     return;
                 }
@@ -518,7 +523,7 @@ private:
 
     std::string get_identifer() {
         if (current_.type() != pp_token_type::identifier) {
-            NOT_IMPLEMENTED("Expected identifier got " << current_);
+            LEX_ERROR("Expected identifier got " << current_);
         }
         const auto text = current_.text();
         internal_next();
@@ -538,7 +543,7 @@ private:
     void handle_directive() {
         if (current_.type() != pp_token_type::identifier) {
             // TODO: Support null directive
-            NOT_IMPLEMENTED("Expected identifier after # got " << current_);
+            LEX_ERROR("Expected identifier after # got " << current_);
         }
         const std::string dir = current_.text();
         std::string include_next;
@@ -568,7 +573,7 @@ private:
             } else if (dir == "error") {
                 auto text = read_to_newline();
                 if (is_cond_active()) {
-                    NOT_IMPLEMENTED("#error " << combine_tokens(text));
+                    LEX_ERROR("#error " << combine_tokens(text));
                 }
             } else if (dir == "if") {
                 handle_if();
@@ -584,14 +589,14 @@ private:
                 handle_endif();
             } else {
                 if (is_cond_active()) {
-                    NOT_IMPLEMENTED("#" << dir);
+                    LEX_ERROR("#" << dir);
                 }
                 (void)read_to_newline();
             }
         }
         skip_whitespace();
         if (current_.type() != pp_token_type::newline) {
-            NOT_IMPLEMENTED("Expected newline after #" << dir << " got " << current_);
+            LEX_ERROR("Expected newline after #" << dir << " got " << current_);
         }
         if (!include_next.empty()) {
             assert(pending_tokens_.empty());
@@ -617,14 +622,14 @@ private:
         std::optional<std::vector<std::string>> params;
         if (current_.type() == pp_token_type::punctuation) {
             if (current_.text() != "(") {
-                NOT_IMPLEMENTED("Unexpected " << current_ << " in macro definition");
+                LEX_ERROR("Unexpected " << current_ << " in macro definition");
             }
             internal_next();
             std::vector<std::string> ps;
             bool is_variadic = false;
             while (current_.type() != pp_token_type::punctuation || current_.text() != ")") {
                 if (is_variadic) {
-                    NOT_IMPLEMENTED("Ellipsis may only appear as last argument name");
+                    LEX_ERROR("Ellipsis may only appear as last argument name");
                 }
                 skip_whitespace();
                 if (!ps.empty()) {
@@ -639,7 +644,7 @@ private:
                 } else {
                     ps.push_back(get_identifer());
                     if (ps.back() == variadic_arg_name) {
-                        NOT_IMPLEMENTED(variadic_arg_name << " must not be used as argument name");
+                        LEX_ERROR(variadic_arg_name << " must not be used as argument name");
                     }
                     // TODO: Check for duplicate argument names...
                 }
@@ -655,7 +660,7 @@ private:
             if (it->second.params == params && it->second.replacement == replacement) {
                 return;
             }
-            NOT_IMPLEMENTED("Invalid redefinition of macro " << id);
+            LEX_ERROR("Invalid redefinition of macro " << id);
         }
 
         defines_[id] = macro_definition{params, replacement};
@@ -715,7 +720,7 @@ private:
     void handle_elif() {
         //std::cout << std::string(2*conds_.size()-2, ' ') << "#elif\n";
         if (conds_.empty()) {
-            NOT_IMPLEMENTED("#else outside #if/#ifdef");
+            LEX_ERROR("#else outside #if/#ifdef");
         }
         const auto res = eval_cond();
         conds_.back().current = conds_.back().next;
@@ -735,13 +740,13 @@ private:
             // Not legal, we've already passed an #else
             break;
         }
-        NOT_IMPLEMENTED("#elif with " << conds_.back().current);
+        LEX_ERROR("#elif with " << conds_.back().current);
     }
 
     void handle_else() {
         //std::cout << std::string(2*conds_.size()-2, ' ') << "#else\n";
         if (conds_.empty()) {
-            NOT_IMPLEMENTED("#else outside #if/#ifdef");
+            LEX_ERROR("#else outside #if/#ifdef");
         }
         conds_.back().current = conds_.back().next;
         switch (conds_.back().current) {
@@ -761,12 +766,12 @@ private:
             // Not legal, we've already passed an #else
             break;
         }
-        NOT_IMPLEMENTED("#else with " << conds_.back().current);
+        LEX_ERROR("#else with " << conds_.back().current);
     }
 
     void handle_endif() {
         if (conds_.empty()) {
-            NOT_IMPLEMENTED("#endif outside #if/#ifdef");
+            LEX_ERROR("#endif outside #if/#ifdef");
         }
         conds_.pop_back();
         //std::cout << std::string(2*conds_.size(), ' ') << "#endif\n";
@@ -792,39 +797,19 @@ private:
         impl& pp_;
     };
 
-    // Suppress expansion of "macro_id" (if non-empty) until the stream has been exhausted
     struct vec_token_stream : token_stream {
-        explicit vec_token_stream(const std::vector<pp_token>& v, impl& pp, const std::string& expanding_id) : v_{v}, pp_{pp} {
-            if (!expanding_id.empty() && !v.empty()) {
-                pp_.expanding_.push_back(expanding_id);
-            } else {
-                state_ = 2;
-            }
+        explicit vec_token_stream(const std::vector<pp_token>& v) : v_{v} {
         }
         ~vec_token_stream() {
-            assert(state_ != 0);
-            if (!state_) pp_.expanding_.pop_back();
         }
         void next() override {
             assert(index_ < v_.size());
             ++index_;
-            if (index_ == v_.size()) {
-#ifdef PP_DEBUG
-                std::cout << "Vec stream exhausted\n";
-#endif
-                assert(state_ == 0 || state_ == 2);
-                if (state_ == 0) {
-                    pp_.expanding_.pop_back();
-                    state_ = 1;
-                }
-            }
         }
         const pp_token& current() const override { return index_ < v_.size() ? v_[index_] : pp_token::eof; }
     private:
         const std::vector<pp_token>& v_;
-        impl& pp_;
         size_t index_ = 0;
-        int state_ = 0;
     };
 
     struct null_token_stream : token_stream {
@@ -843,38 +828,92 @@ private:
                 first_.next();
                 if (!first_.current()) {
                     first_exhausted_ = true;
+#ifdef PP_DEBUG
+                    std::cout << "Switching to other stream\n";
+#endif
                 }
             }
         }
         const pp_token& current() const override { return first_exhausted_ ? second_.current() : first_.current(); }
+
     private:
         token_stream& first_;
         token_stream& second_;
         bool first_exhausted_;
     };
 
-    std::vector<pp_token> do_replace(const std::vector<pp_token>& replacement, const std::string& macro_id, token_stream& cont_stream) {
+    std::vector<pp_token> do_replace(const std::vector<pp_token>& replacement, const std::string& macro_id, bool pop_when_empty, token_stream& cont_stream) {
 #ifdef PP_DEBUG
-        std::cout << "Replacing in {" << macro_id << "}:";
+        std::cout << "Replacing " << macro_id << " in {";
         for (const auto& t: replacement) std::cout << " " << t;
-        std::cout << "\n";
+        std::cout << "}\n";
 #endif
-        vec_token_stream tsr{replacement, *this, macro_id};
+        bool popped = true;
+        if (!macro_id.empty()) {
+            expanding_.push_back(macro_id);
+            popped = false;
+        }
+        auto pop_macro = [&]() {
+            if (macro_id.empty()) {
+                return;
+            }
+            if (popped) {
+                return;
+            }
+            if (expanding_.empty() || expanding_.back() != macro_id) {
+                LEX_ERROR("Error while expanding " << macro_id);
+            }
+            expanding_.pop_back();
+            popped = true;
+#ifdef PP_DEBUG
+            std::cout << "No longer forbinding expansion of " << macro_id << "\n";
+#endif
+        };
+
+        vec_token_stream tsr{replacement};
         std::vector<pp_token> res;
+        int handling_defined = 0; // With at least GCC a macro can expand to defined(...)
         while (tsr.current()) {
+            if (handling_defined) {
+                if (tsr.current().type() == pp_token_type::identifier) {
+                    handling_defined = 0;
+#ifdef PP_DEBUG
+                    std::cout << "No longer handling 'defined'\n";
+#endif
+                    goto push;
+                }
+            }
             if (tsr.current().type() == pp_token_type::identifier && std::find(expanding_.begin(), expanding_.end(), tsr.current().text()) == expanding_.end()) {
+                if (tsr.current().text() == "defined") {
+#ifdef PP_DEBUG
+                    std::cout << "Expanded 'defined'\n";
+#endif
+                    handling_defined = 1;
+                    goto push;
+                }
                 auto it = defines_.find(tsr.current().text());
                 if (it != defines_.end()) {
                     tsr.next();
+                    // Allow the current macro to be expanded again if we've finished all expansions
+                    if (!tsr.current() && pop_when_empty) {
+                        pop_macro();
+                    }
                     combined_token_stream cs{tsr, cont_stream};
                     auto r = handle_replace(cs, it->first, it->second);
                     res.insert(res.end(), r.begin(), r.end());
                     continue;
                 }
             }
+        push:
             res.push_back(tsr.current());
             tsr.next();
         }
+#ifdef PP_DEBUG
+        std::cout << "Replaced  " << macro_id << " with {";
+        for (const auto& t: res) std::cout << " " << t;
+        std::cout << "}\n";
+#endif
+        pop_macro();
         return res;
     }
 
@@ -917,7 +956,7 @@ private:
                 current_arg.push_back(t);
             }
             if (ts.current().type() != pp_token_type::punctuation || ts.current().text() != ")") {
-                NOT_IMPLEMENTED("Expected ')' after function-like macro");
+                LEX_ERROR("Expected ')' after function-like macro");
             }
             ts.next();
 
@@ -935,7 +974,7 @@ private:
             }
 
             if (args.size() != def.params->size()) {
-                NOT_IMPLEMENTED("Invalid number of arguments to macro got " << args.size() << " expecting " << def.params->size() << " for macro " << macro_id);
+                LEX_ERROR("Invalid number of arguments to macro got " << args.size() << " expecting " << def.params->size() << " for macro " << macro_id);
             }
 
             enum { combine_none, combine_str, combine_paste } combine_state = combine_none;
@@ -948,10 +987,10 @@ private:
                         continue;
                     } else if (t.text() == "##") {
                         if (combine_state != combine_none) {
-                            NOT_IMPLEMENTED("# and ## in same expression");
+                            LEX_ERROR("# and ## in same expression");
                         }
                         if (ri == 0) {
-                            NOT_IMPLEMENTED("## may not appear at the start of the replacement list");
+                            LEX_ERROR("## may not appear at the start of the replacement list");
                         }
                         combine_state = combine_paste;
                         continue;
@@ -978,7 +1017,7 @@ private:
                             // Expand macros in argument now that we know it's not being combined/stringified
                             // (note: before restricting expansion of "macro_id")
                             null_token_stream null_ts{};
-                            nts = do_replace(nts, "", null_ts);
+                            nts = do_replace(nts, "", true, null_ts);
                         }
                         combine_state = combine_none;
                         replacement.insert(replacement.end(), nts.begin(), nts.end());
@@ -994,12 +1033,12 @@ private:
                     }
                 }
                 if (combine_state != combine_none) {
-                    NOT_IMPLEMENTED("Unused #/## in macro replacement list for " << macro_id << " before " << t);
+                    LEX_ERROR("Unused #/## in macro replacement list for " << macro_id << " before " << t);
                 }
                 replacement.push_back(t);
             }
             if (combine_state != combine_none) {
-                NOT_IMPLEMENTED("Unused #/## in macro replacement list for " << macro_id);
+                LEX_ERROR("Unused #/## in macro replacement list for " << macro_id);
             }
         } else {
             // Object like-macro
@@ -1007,7 +1046,7 @@ private:
             for (size_t i = 0, s = def.replacement.size(); i < s; ++i) {
                 if (i + 1 < s && def.replacement[i+1].type() == pp_token_type::punctuation && def.replacement[i+1].text() == "##") {
                     if (i + 2 >= s) {
-                        NOT_IMPLEMENTED("## at end of macro replacement list");
+                        LEX_ERROR("## at end of macro replacement list");
                     }
                     replacement.push_back(pp_token{def.replacement[i].type(), def.replacement[i].text() + def.replacement[i+2].text()});
                     i += 2;
@@ -1016,13 +1055,13 @@ private:
                 }
             }
         }
-        return do_replace(replacement, macro_id, ts);
+        return do_replace(replacement, macro_id, !!def.params, ts);
     }
 
     pp_number eval_primary() {
         skip_whitespace();
         const auto t = current_;
-        if (!t) NOT_IMPLEMENTED("Unexpected EOF");
+        if (!t) LEX_ERROR("Unexpected EOF");
         internal_next();
         if (t.type() == pp_token_type::punctuation) {
             if (t.text() == "(") {
@@ -1035,8 +1074,11 @@ private:
             char* end = nullptr; 
             errno = 0;
             const auto n = strtoull(nt, &end, 0);
+            while (end && (*end == 'l' || *end == 'L' || *end == 'u' || *end == 'U')) {
+                ++end;
+            }
             if (!end || *end || (n == ULLONG_MAX && errno == ERANGE)) {
-                NOT_IMPLEMENTED("Invalid PP number '" << nt << "'");
+                LEX_ERROR("Invalid PP number '" << nt << "'");
             }
             return n > LLONG_MAX ? pp_number{n} : pp_number{static_cast<intmax_t>(n)};
         } else if (t.type() == pp_token_type::identifier) {
@@ -1063,7 +1105,7 @@ private:
             }
             return pp_number{0LL};
         }
-        NOT_IMPLEMENTED(t);
+        LEX_ERROR(t);
     }
 
     pp_number eval_unary() {
@@ -1074,7 +1116,7 @@ private:
                 internal_next();
                 return pp_number{eval_primary().uval() ? 0LL : 1LL};
             } else if (op == "~" || op == "+" || op == "-") {
-                NOT_IMPLEMENTED(op);
+                LEX_ERROR(op);
             }
         }
         return eval_primary();
@@ -1109,7 +1151,7 @@ private:
                     break;
                 }
                 const auto look_ahead_precedence = operator_precedence(current_.text());
-                if (look_ahead_precedence > precedence) {
+                if (look_ahead_precedence > precedence || (look_ahead_precedence == precedence && current_.text() != "?")) {
                     break;
                 }
                 rhs = eval_expr1(rhs, look_ahead_precedence);
@@ -1151,287 +1193,53 @@ void preprocessor::next() {
     impl_->next();
 }
 
-void define_standard_headers(source_manager& sm) {
-    sm.define_standard_headers("assert.h", R"(
-#ifndef _ASSERT_H
-#define _ASSERT_H
-#define assert(e)
-#endif
-)");
-    sm.define_standard_headers("complex.h", "");
-    sm.define_standard_headers("ctype.h", "");
-    sm.define_standard_headers("errno.h", R"(
-#ifndef _ERRNO_H
-#define _ERRNO_H
-extern int _Errno;
-#define errno _Errno
-#endif
-)");
-    sm.define_standard_headers("fenv.h", "");
-    sm.define_standard_headers("float.h", "");
-    sm.define_standard_headers("inttypes.h", R"(
-#ifndef _INTTYPES_H
-#define _INTTYPES_H
-#include <stdint.h>
-#endif
-)");
-    sm.define_standard_headers("iso646.h", "");
-    sm.define_standard_headers("limits.h", "");
-    sm.define_standard_headers("locale.h", "");
-    sm.define_standard_headers("math.h", R"(
-#ifndef _MATH_H
-#define _MATH_H
-extern double ldexp(double, int);
-#endif
-)");
-    sm.define_standard_headers("setjmp.h", R"(
-#ifndef _SETJMP_H
-#define _SETJMP_H
-struct _Jmp_buf {};
-typedef struct _Jmp_buf jmp_buf[1];
-void   longjmp(jmp_buf, int);
-int    setjmp(jmp_buf);
-#endif
-)");
-    sm.define_standard_headers("signal.h", "");
-    sm.define_standard_headers("stdalign.h", "");
-    sm.define_standard_headers("stdarg.h", R"(
-#ifndef _STDARG_H
-#define _STDARG_H
-typedef struct __va_list* va_list;
-#define va_start(v,n)
-#define va_arg(v, t) ((t)0)
-#define va_end(v)
-#endif
-)");
-    sm.define_standard_headers("stdatomic.h", "");
-    sm.define_standard_headers("stdbool.h", "");
-    sm.define_standard_headers("stddef.h", R"(
-#ifndef _STDDEF_H
-#define _STDDEF_H
-typedef long long          ptrdiff_t;
-typedef long long          ssize_t;
-typedef unsigned long long size_t;
-typedef unsigned short     wchar_t;
-#define NULL ((void*)0)
-#define offsetof(type,member) ((size_t)&((type*)0)->member)
-#endif
-)");
-    sm.define_standard_headers("stdint.h", R"(
-#ifndef _STDINT_H
-#define _STDINT_H
-typedef signed char             int8_t;
-typedef short int               int16_t;
-typedef int                     int32_t;
-typedef long long int           int64_t;
-typedef long long int           intptr_t;
-typedef unsigned char           uint8_t;
-typedef unsigned short int      uint16_t;
-typedef unsigned int            uint32_t;
-typedef unsigned long long int  uint64_t;
-typedef unsigned long long int  uintptr_t;
-#endif
-)");
-    sm.define_standard_headers("stdio.h", R"(
-#ifndef _STDIO_H
-#define _STDIO_H
-#include <stddef.h>
-#include <stdarg.h>
-
-typedef struct _FILE FILE;
-#define SEEK_SET 0
-#define SEEK_CUR 1
-#define SEEK_END 2
-
-extern FILE* _Files[3];
-#define stdin  (_Files[0])
-#define stdout (_Files[1])
-#define stderr (_Files[2])
-
-extern int      printf(const char *, ...);
-extern int      sprintf(char *, const char *, ...);
-extern int      snprintf(char *, size_t, const char *, ...);
-extern int      fclose(FILE *);
-extern int      fflush(FILE *);
-extern char    *fgets(char *, int, FILE *);
-extern FILE*    fopen(const char *, const char *);
-extern int      fprintf(FILE *, const char *, ...);
-extern int      fputc(int, FILE *);
-extern int      fputs(const char *, FILE *);
-extern size_t   fread(void *, size_t, size_t, FILE *);
-extern int      fseek(FILE *, long int, int);
-extern long     ftell(FILE *);
-extern size_t   fwrite(const void *, size_t, size_t, FILE *);
-
-extern int      sscanf(const char *, const char *, int, ...);
-extern int      vfprintf(FILE *, const char *, va_list);
-extern int      vprintf(const char *, va_list);
-extern int      vsnprintf(char *, size_t, const char *, va_list);
-extern int      vsprintf(char *, const char *, va_list);
-// POSIX
-extern FILE*    fdopen(int, const char *);
-#endif
-)");
-    sm.define_standard_headers("stdlib.h", R"(
-#ifndef _STDLIB_H
-#define _STDLIB_H
-#include <stddef.h>
-
-#define EXIT_SUCCESS 0x00
-#define EXIT_FAILURE 0xff
-
-#define RAND_MAX 32767
-
-extern double               atof(const char *);
-extern int                  atoi(const char *);
-extern long                 atol(const char *);
-extern long long            atoll(const char *);
-extern void*                malloc(size_t);
-extern void*                calloc(size_t, size_t);
-extern void*                realloc(void*, size_t);
-extern void                 free(void *);
-extern void                 exit(int);
-extern int                  rand(void);
-
-
-extern long                 strtol(const char*, char**, int);
-extern long long            strtoll(const char*, char**, int);
-extern unsigned long        strtoul(const char*, char**, int);
-extern unsigned long long   strtoull(const char*, char**, int);
-extern float                strtof(const char*, char**);
-extern double               strtod(const char*, char**);
-extern long double          strtold(const char*, char**);
-extern void                 qsort(void*, size_t, size_t, int (*)(const void*,const void*));
-
-// POSIX
-extern char*                getenv(const char *);
-extern int                  remove(const char *);
-#endif
-)");
-    sm.define_standard_headers("stdnoreturn.h", "");
-    sm.define_standard_headers("string.h", R"(
-#ifndef _STRING_H
-#define _STRING_H
-#include <stddef.h>
-extern void    *memchr(const void *, int, size_t);
-extern int      memcmp(const void *, const void *, size_t);
-extern void    *memcpy(void *, const void *, size_t);
-extern void    *memmove(void *, const void *, size_t);
-extern void    *memset(void *, int, size_t);
-extern char    *strcat(char *, const char *);
-extern char    *strchr(const char *, int);
-extern int      strcmp(const char *, const char *);
-extern char    *strcpy(char *, const char *);
-extern char    *strerror(int);
-extern size_t   strlen(const char *);
-extern char    *strncat(char *, const char *, size_t);
-extern int      strncmp(const char *, const char *, size_t);
-extern char    *strncpy(char *, const char *, size_t);
-extern char    *strpbrk(const char *, const char *);
-extern char    *strrchr(const char *, int);
-extern size_t   strspn(const char *, const char *);
-extern char    *strstr(const char *, const char *);
-extern char    *strtok(char *, const char *);
-
-// POSIX
-extern int strcasecmp(const char *s1, const char *s2);
-int strncasecmp(const char *s1, const char *s2, size_t n);
-#endif
-)");
-    sm.define_standard_headers("tgmath.h", "");
-    sm.define_standard_headers("threads.h", "");
-    sm.define_standard_headers("time.h", R"(
-#ifndef _TIME_H
-#define _TIME_H
-#include <stddef.h>
-struct tm {
-    int  tm_sec;   // seconds [0,61]
-    int  tm_min;   // minutes [0,59]
-    int  tm_hour;  // hour [0,23]
-    int  tm_mday;  // day of month [1,31]
-    int  tm_mon;   // month of year [0,11]
-    int  tm_year;  // years since 1900
-    int  tm_wday;  // day of week [0,6] (Sunday = 0)
-    int  tm_yday;  // day of year [0,365]
-    int  tm_isdst; // daylight savings flag
-};
-typedef long long time_t;
-
-extern struct tm *localtime(const time_t *);
-extern time_t     time(time_t *);
-#endif
-)");
-    sm.define_standard_headers("uchar.h", "");
-    sm.define_standard_headers("wchar.h", "");
-    sm.define_standard_headers("wctype.h", "");
-}
-#include <fcntl.h>
-
-void define_posix_headers(source_manager& sm) {
-    sm.define_standard_headers("dlfcn.h", "");
-    sm.define_standard_headers("fcntl.h", R"(
-#ifndef _FCNTL_H
-#define _FCNTL_H
-#define O_RDONLY	0x0000
-#define O_WRONLY	0x0001
-#define O_RDWR		0x0002
-
-#define O_CREAT		0x0100
-#define O_EXCL		0x0200
-#define O_NOCTTY	0x0400
-#define O_TRUNC		0x0800
-#define O_APPEND	0x1000
-#define O_NONBLOCK	0x2000
-#endif
-)");
-    sm.define_standard_headers("unistd.h", R"(
-#ifndef _UNISTD_H
-#define _UNISTD_H
-#include <stddef.h>
-#include <sys/types.h>
-extern ssize_t read(int, void*, size_t);
-extern ssize_t write(int, const void*, size_t);
-extern int open(const char*, int, ...);
-extern int close(int);
-extern char* getcwd(char*, size_t);
-extern int unlink(const char *pathname); 
-extern off_t lseek(int, off_t, int);
-extern int dup(int);
-extern int execvp(const char *file, char *const argv[]);
-#endif
-)");
-    sm.define_standard_headers("sys/stat.h", R"(
-#ifndef _SYS_STAT_H
-#define _SYS_STAT_H
-typedef unsigned mode_t;
-extern int chmod(const char *, mode_t);
-#endif
-)");
-    sm.define_standard_headers("sys/time.h", R"(
-#ifndef _SYS_TIME_H
-#define _SYS_TIME_H
-#include <sys/types.h>
-struct timeval {
-    time_t      tv_sec;
-    suseconds_t tv_usec;
-};
-
-extern int gettimeofday(struct timeval *restrict tp, void *restrict tzp);
-#endif
-)");
-    sm.define_standard_headers("sys/types.h", R"(
-#ifndef _SYS_TYPES_H
-#define _SYS_TYPES_H
-#include <time.h>
-typedef long long off_t;
-typedef long long suseconds_t;
-#endif
-)");
-}
-
 const char* standard_builtin_text() {
     return R"(
-#define __amd64__ 1
+#define __STDC__         1
+#define __STDC_VERSION__ 199901L
+#define __STDC_HOSTED__  1
+
+#define __amd64__        1
+#define __x86_64__       1
+#define __x86_64         1
+
+#define _WIN32           1
+#define _WIN64           1
+
+#define _VA_LIST_DEFINED 1
+typedef char* __builtin_va_list;
+#define va_list __builtin_va_list
+#define __builtin_va_start(ap, param) (ap = (char*)&param)
+#define __builtin_va_arg(ap, t) *(t*)((ap += 8) - 8)
+#define __builtin_va_copy(dst, src) ((dst) = (src))
+#define __builtin_va_end(ap)
+
+#define va_start(v,l) __builtin_va_start(v,l)
+#define va_arg(v,l) __builtin_va_arg(v,l)
+#define va_copy(d,s) __builtin_va_copy(d,s)
+#define va_end(v) __builtin_va_end(v)
+
+#define __builtin_offsetof(type,member) ((size_t)&((type*)0)->member)
+
+typedef unsigned short wchar_t;
+typedef int __int32;
+typedef long long __int64;
+
+#define __cdecl
+#define __declspec(x)
+#define __inline inline
+#define __inline__ inline
+#define __forceinline inline
+#define __unaligned
+
+#define __CRT__NO_INLINE // don't want inline asm
+#define _CONST_RETURN
+#define _CRT_ALIGN(n)
+
+#define __has_builtin(x) 0
+
+extern unsigned __int64 __readgsqword(unsigned long);
+
 )";
 }
 

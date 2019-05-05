@@ -62,6 +62,11 @@ void type::modify_inner(const std::shared_ptr<const type>& t) {
     } else if (base() == ctype::array_t) {
         auto& ai = std::get<2>(val_);
         const_cast<type*>(ai->t().get())->modify_inner(t);
+    } else if (ct() == ctype::none) {
+        *this = *t;
+    } else if (base() == ctype::function_t) {
+        auto& fi = std::get<6>(val_);
+        const_cast<type*>(fi->ret_type().get())->modify_inner(t);
     } else {
         NOT_IMPLEMENTED(*this << " " << *t);
     }        
@@ -401,9 +406,9 @@ bool redecl_type_compare(const type& l, const type& r) {
         return false;
     }
     if (l.ct() != r.ct()) {
-        // It's OK if later declarations drop extern/static
-        const auto old_storage_flags = l.ct() & (ctype::extern_f|ctype::storage_f);
-        if (l.ct() != (r.ct() | old_storage_flags)) {
+        // Changing storage types is OK....
+        const auto diff = (l.ct() ^ r.ct()) & ~ctype::storage_f;
+        if (!!diff) {
             return false;
         }
     }
@@ -449,7 +454,8 @@ bool redecl_type_compare(const type& l, const type& r) {
 
 size_t sizeof_type(ctype ct) {
     constexpr size_t pointer_size = 8;
-    switch (ct) {
+    switch (base_type(ct)) {
+    case ctype::bool_t:         return 1;
     case ctype::plain_char_t:   return 1;
     case ctype::char_t:         return 1;
     case ctype::short_t:        return 2;

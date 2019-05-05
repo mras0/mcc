@@ -52,8 +52,8 @@ X // 2 + ((2)+1)
 
         // Example from https://gcc.gnu.org/onlinedocs/cpp/Self-Referential-Macros.html
         { "#define x (4 + y)\n#define y (2 * x)\nx y", {
-            PP_PUNCT("("), PP_NUM(4), PP_PUNCT("+"), PP_PUNCT("("), PP_NUM(2), PP_PUNCT("*"), PP_ID(x), PP_PUNCT(")"), PP_PUNCT(")"), 
-            PP_PUNCT("("), PP_NUM(2), PP_PUNCT("*"), PP_PUNCT("("), PP_NUM(4), PP_PUNCT("+"), PP_ID(y), PP_PUNCT(")"), PP_PUNCT(")"), 
+            PP_PUNCT("("), PP_NUM(4), PP_PUNCT("+"), PP_PUNCT("("), PP_NUM(2), PP_PUNCT("*"), PP_ID(x), PP_PUNCT(")"), PP_PUNCT(")"),
+            PP_PUNCT("("), PP_NUM(2), PP_PUNCT("*"), PP_PUNCT("("), PP_NUM(4), PP_PUNCT("+"), PP_ID(y), PP_PUNCT(")"), PP_PUNCT(")"),
         } },
         { "#define X(a) a\n#define Y X(2)\nY", {
             PP_NUM(2)
@@ -97,9 +97,9 @@ char p[] = join(x, y);
         )", { do_pp("char p[] = \"x ## y\";") } },
 
         // Floating point numbers
-        { "42.0", {PP_FNUM(42.0)}}, 
-        { "1.234", {PP_FNUM(1.234)}}, 
-        { "5e-10", {PP_FNUM(5e-10)}}, 
+        { "42.0", {PP_FNUM(42.0)}},
+        { "1.234", {PP_FNUM(1.234)}},
+        { "5e-10", {PP_FNUM(5e-10)}},
         // Suffixed numbers
         { "100ulLU", {PP_NUM(100ulLU)}},
         // Variadic macro
@@ -184,7 +184,6 @@ IS_PAREN(xxx) // Expands to 0
 
     { "#define BLAH(pf,sf) pf ## cc ## sf\nBLAH(,s)\nBLAH(p,)\n", {PP_ID(ccs), PP_ID(pcc)}},
     { "#define X(name) table_ ## name\nX(286_0f)\n", {PP_ID(table_286_0f)}},
-#endif
     { R"(
 # define ELFW(type) ELF##32##_##type
 #define ELF32_ST_BIND(val)		(((unsigned char) (val)) >> 4)
@@ -217,9 +216,29 @@ ELFW(ST_INFO)(sym_bind, ELFW(ST_TYPE)(esym->st_info));
             PP_PUNCT(")"),
         PP_PUNCT(")"),
         PP_PUNCT(";"),
-        } 
+        }
     },
     { "#define X(a) X(a)\nX(42)", { PP_ID(X), PP_PUNCT("("), PP_NUM(42), PP_PUNCT(")"), } },
+    // GCC allows a macro expansion to include defined
+    { R"(
+#define W
+#define V 0x0502
+#define X (V >= 0x0502 || !defined (W))
+#if X && !defined (__C)
+1
+#endif)", { PP_NUM(1) } },
+#endif
+    { R"(
+# define __MINGW_NAME_AW(func) func##A
+# define __MINGW_NAME_AW_EXT(func,ext) func##A##ext
+# define __MINGW_NAME_UAW(func) func##_A
+# define __MINGW_NAME_UAW_EXT(func,ext) func##_A_##ext
+# define __MINGW_STRING_AW(str) str	/* same as TEXT() from winnt.h */
+# define __MINGW_PROCNAMEEXT_AW "A"
+#define RPC_CALL_ATTRIBUTES_V1 __MINGW_NAME_UAW(RPC_CALL_ATTRIBUTES_V1)
+typedef RPC_CALL_ATTRIBUTES_V1 RPC_CALL_ATTRIBUTES;
+)", {  PP_ID(typedef), PP_ID(RPC_CALL_ATTRIBUTES_V1_A), PP_ID(RPC_CALL_ATTRIBUTES), PP_PUNCT(";") } },
+    { "#define __inline inline\n#define inline __inline\ninline\n", { PP_ID(inline) } },
     };
 
     const char* delim = "-----------------------------------\n";
@@ -250,6 +269,112 @@ ELFW(ST_INFO)(sym_bind, ELFW(ST_TYPE)(esym->st_info));
 #undef PP_STR
 #undef PP_ID
 
+enum class reg_name {
+    RAX, RCX, RDX, RBX,
+    RSP, RBP, RSI, RDI,
+    R8,  R9,  R10, R11,
+    R12, R13, R14, R15,
+
+    XMM0 = 0, XMM1, XMM2, XMM3,
+    XMM4, XMM5, XMM6, XMM7,
+
+    NONE = 0xff
+};
+
+enum class reg_type {
+    b, w, d, q, x
+};
+
+class reg {
+public:
+    constexpr explicit reg(reg_name name, reg_type type) : name_{name}, type_{type} {}
+    constexpr reg_name name() const { return name_; }
+    constexpr reg_type type() const { return type_; }
+private:
+    reg_name name_;
+    reg_type type_;
+};
+
+constexpr const reg AL{reg_name::RAX, reg_type::b};
+constexpr const reg CL{reg_name::RCX, reg_type::b};
+
+constexpr const reg EAX{reg_name::RAX, reg_type::d};
+
+constexpr const reg RAX{reg_name::RAX, reg_type::q};
+constexpr const reg RCX{reg_name::RCX, reg_type::q};
+constexpr const reg RDX{reg_name::RDX, reg_type::q};
+constexpr const reg RBX{reg_name::RBX, reg_type::q};
+constexpr const reg RSP{reg_name::RSP, reg_type::q};
+constexpr const reg RBP{reg_name::RBP, reg_type::q};
+constexpr const reg RSI{reg_name::RSI, reg_type::q};
+constexpr const reg RDI{reg_name::RDI, reg_type::q};
+constexpr const reg R8{reg_name::R8, reg_type::q};
+constexpr const reg R9{reg_name::R9, reg_type::q};
+
+constexpr const reg XMM0{reg_name::XMM0, reg_type::x};
+constexpr const reg XMM1{reg_name::XMM1, reg_type::x};
+constexpr const reg XMM2{reg_name::XMM2, reg_type::x};
+constexpr const reg XMM3{reg_name::XMM3, reg_type::x};
+
+const char* const reg_names_8[16]     = { "al", "cl", "dl", "bl", "ah", "ch", "dh", "bh", "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b", "r15b" };
+const char* const reg_names_8_rex[16] = { "al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil", "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b", "r15b" };
+const char* const reg_names_16[16]    = { "ax", "cx", "dx", "bx", "sp", "bp", "si", "di" , "r8w", "r9w", "r10w", "r11w", "r12w", "r13w", "r14w", "r15w" };
+const char* const reg_names_32[16]    = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d"  };
+const char* const reg_names_64[16]    = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15" };
+
+std::ostream& operator<<(std::ostream& os, const reg& r) {
+    if (r.name() == reg_name::NONE) {
+        return os << "NONE-REGISTER";
+    }
+    os << "%";
+    const auto ri = static_cast<int>(r.name());
+    switch (r.type()) {
+    case reg_type::b: return os << reg_names_8_rex[ri];
+    case reg_type::w: return os << reg_names_16[ri];
+    case reg_type::d: return os << reg_names_32[ri];
+    case reg_type::q: return os << reg_names_64[ri];
+    case reg_type::x: return os << "xmm" << ri;
+    default: NOT_IMPLEMENTED(static_cast<int>(r.type()));
+    }
+}
+
+reg reg_for_type(ctype t, reg_name r = reg_name::RAX) {
+    switch (sizeof_type(t)) {
+    case 1: return reg{r, reg_type::b};
+    case 2: return reg{r, reg_type::w};
+    case 4: return reg{r, reg_type::d};
+    case 8: return reg{r, reg_type::q};
+    default:
+        NOT_IMPLEMENTED(t << " " << reg_names_64[static_cast<int>(r)]);
+    }
+}
+
+class memory_ref_sib {
+public:
+    constexpr explicit memory_ref_sib(reg_name base, reg_name index, int scale, int disp) : base_{base}, index_{index}, scale_{scale}, disp_{disp} {
+        assert(scale_ == 1 || scale_ == 2 || scale_ == 4 || scale_ == 8);
+        assert(base != reg_name::NONE);
+    }
+    friend std::ostream& operator<<(std::ostream& os, const memory_ref_sib& m) {
+        os << "[" << reg{m.base_, reg_type::q};
+        if (m.index_ != reg_name::NONE) {
+            os << "+" << reg{m.index_, reg_type::q};
+            if (m.scale_ > 1) os << "*" << m.scale_;
+        }
+        if (m.disp_) {
+            if (m.disp_ > 0) os << "+";
+            os << m.disp_;
+        }
+        return os << "]";
+    }
+private:
+    reg_name base_;
+    reg_name index_;
+    int scale_;
+    int disp_;
+};
+
+
 std::string current_section;
 std::string next_comment_;
 
@@ -262,37 +387,42 @@ void emit(const std::string& inst, Args&&... args) {
     auto output_one = [&](const auto& a) { std::cout << (n++ ? ", ": "\t") << a; };
     (output_one(args), ...);
     if (!next_comment_.empty()) {
-        std::cout << "\t\t; " << next_comment_;
+        std::cout << "\t\t# " << next_comment_;
         next_comment_.clear();
     }
     std::cout << "\n";
 }
 
+void emit_start() {
+    emit(".intel_syntax", "prefix");
+}
+
 void emit_zeros(size_t num_bytes) {
     assert(current_section != "bss");
-    emit("TIMES " + std::to_string(num_bytes) + " DB 0");
+    emit(".zero", num_bytes);
 }
 
 void emit_section_change(const std::string& s) {
-    assert(s == "code" || s == "data" || s == "rodata" || s == "bss");
+    assert(s == "text" || s == "data" || s == "rodata" || s == "bss");
+
     if (s != current_section) {
-        emit("SECTION", "." + s);
+        emit(".section", "." + s);
         current_section = s;
     }
 }
 
 void emit_extern_decl(const std::string& id) {
-    emit("EXTERN", id);
+    emit(".extern", id);
 }
 
 void emit_global_decl(const std::string& id) {
-    emit("GLOBAL", id);
+    emit(".global", id);
 }
 
 void emit_label(const std::string& l) {
     std::cout << l << ":";
     if (!next_comment_.empty()) {
-        std::cout << "\t\t; " << next_comment_;
+        std::cout << "\t\t# " << next_comment_;
         next_comment_.clear();
     }
     std::cout << "\n";
@@ -311,7 +441,7 @@ void emit_copy(size_t sz) {
         suffix = "W";
     }
     if (sz > 1) {
-        emit("MOV", "RCX", sz);
+        emit("MOV", RCX, sz);
         emit("REP", "MOVS" + suffix);
     } else {
         emit("MOVS" + suffix);
@@ -330,46 +460,24 @@ const char* compare_cond(token_type op, bool unsigned_) {
     }
 }
 
-std::string reg_off_str(const std::string& reg, int offset) {
-    return "[" + reg + (offset < 0 ? "" : "+") + std::to_string(offset) + "]";
+memory_ref_sib reg_off_str(reg_name r, int offset) {
+    return memory_ref_sib{r, reg_name::NONE, 1, offset};
 }
 
-std::string rbp_str(int offset) {
-    return reg_off_str("RBP", offset);
+memory_ref_sib rbp_str(int offset) {
+    return reg_off_str(reg_name::RBP, offset);
 }
 
-std::string name_mangle(const std::string& id) { return "$"+id; }
+std::string name_mangle(const std::string& id) { return id; }
 
 std::string op_size_str(ctype t) {
     switch (t) {
     case ctype::int_t:
     case ctype::long_t:
-        return "DWORD ";
+        return "DWORD PTR ";
+    case ctype::pointer_t:
     case ctype::long_long_t:
-        return "QWORD ";
-    }
-    NOT_IMPLEMENTED(t);
-}
-
-enum r64_names {
-    RAX, RCX, RDX, RBX,
-    RSP, RBP, RSI, RDI,
-    R8,  R9,  R10, R11,
-    R12, R13, R14, R15
-};
-
-std::string reg_name_for_type(ctype t, r64_names r = RAX) {
-    assert(r == RAX || r == RDX);
-    switch (base_type(t)) {
-    case ctype::bool_t:         [[fallthrough]];
-    case ctype::plain_char_t:   [[fallthrough]];
-    case ctype::char_t:         return r == RAX ? "AL"  : "DL";
-    case ctype::short_t:        return r == RAX ? "AX"  : "DX";
-    case ctype::enum_t:         [[fallthrough]];
-    case ctype::long_t:         [[fallthrough]];
-    case ctype::int_t:          return r == RAX ? "EAX" : "EDX";
-    case ctype::pointer_t:      [[fallthrough]];
-    case ctype::long_long_t:    return r == RAX ? "RAX" : "RDX";
+        return "QWORD PTR ";
     }
     NOT_IMPLEMENTED(t);
 }
@@ -395,29 +503,34 @@ std::string arit_op_name(token_type t, bool is_unsigned) {
     NOT_IMPLEMENTED(t);
 }
 
-std::string data_decl_suffix(ctype ct) {
+std::string data_decl(ctype ct) {
     switch (base_type(ct)) {
     case ctype::plain_char_t:
     case ctype::char_t:
-        return "B";
+        return ".byte";
     case ctype::short_t:
-        return "W";
+        return ".short";
     case ctype::int_t:
     case ctype::long_t:
-        return "D";
+        return ".int";
     case ctype::long_long_t:
     case ctype::pointer_t:
-        return "Q";
+        return ".quad";
     }
     NOT_IMPLEMENTED(ct);
 }
 
-const char* arg_reg_name(int n, bool integral) {
-    const char* const iarg_regs[4] = {"RCX","RDX","R8","R9"};
-    const char* const farg_regs[4] = {"XMM0","XMM1","XMM2","XMM3"};
+reg arg_reg(int n, bool integral) {
+    const reg iarg_regs[4] = { RCX, RDX, R8, R9 };
+    const reg farg_regs[4] = { XMM0, XMM1, XMM2, XMM3 };
     assert(n < 4);
     return integral ? iarg_regs[n] : farg_regs[n];
 }
+
+constexpr const memory_ref_sib ref_RAX{reg_name::RAX, reg_name::NONE, 1, 0};
+constexpr const memory_ref_sib ref_RCX{reg_name::RCX, reg_name::NONE, 1, 0};
+constexpr const memory_ref_sib ref_RAX_RCX{reg_name::RAX, reg_name::RCX, 1, 0};
+constexpr const memory_ref_sib ref_RSP{reg_name::RSP, reg_name::NONE, 1, 0};
 
 class test_visitor {
 public:
@@ -429,12 +542,17 @@ public:
     }
 
     void do_all(const parse_result& pr) {
+        emit_start();
         std::vector<const symbol*> syms;
         for (const auto& s : scope_symbols(pr.global_scope())) {
             const auto& dt = s->decl_type();
-            if (!s->referenced() || s->has_const_int_def() || !dt || !!(dt->ct() & ctype::typedef_f)) {
+            if (s->has_const_int_def() || !dt || !!(dt->ct() & ctype::typedef_f)) {
                 continue;
             }
+            if (!s->referenced() && !s->definition()) {
+                continue;
+            }
+
             if (!s->definition() && (!!(dt->ct() & ctype::extern_f) || dt->base() == ctype::function_t)) {
                 add_extern(*s);
             } else {
@@ -470,7 +588,7 @@ public:
     void handle(const expression& e) {
         return visit(*this, e);
     }
-    
+
     void handle(const statement& s) {
         try {
             visit(*this, s);
@@ -487,19 +605,19 @@ public:
         const auto& si = find_sym(e.sym());
         NEXT_COMMENT(e.sym().id());
         if (!si.offset) {
-            emit("MOV", "RAX", name_mangle(si.sym->id()));
+            emit("MOV", RAX, name_mangle(si.sym->id()));
         } else {
-            emit("LEA", "RAX", rbp_str(si.offset));
+            emit("LEA", RAX, rbp_str(si.offset));
         }
     }
     void operator()(const const_int_expression& e) {
-        emit("MOV", "RAX", e.val().val);
+        emit("MOV", RAX, e.val().val);
     }
     void operator()(const const_float_expression& e) {
         const double dval = e.val();
         if (dval == 0.0) {
             NEXT_COMMENT("0.0");
-            emit("PXOR", "XMM0", "XMM0");
+            emit("PXOR", XMM0, XMM0);
             return;
         }
 
@@ -509,12 +627,12 @@ public:
         const auto l = make_label();
         emit_label(l);
         NEXT_COMMENT(dval);
-        emit("DQ", uval);
-        emit_section_change("code");
-        emit("MOVSD", "XMM0", "[" + l + "]");
+        emit(data_decl(ctype::long_long_t), uval);
+        emit_section_change("text");
+        emit("MOVSD", XMM0, "[" + l + "]");
     }
     void operator()(const string_lit_expression& e) {
-        emit("MOV", "RAX", add_string_lit(e.text()));
+        emit("MOV", RAX, add_string_lit(e.text()));
     }
     void operator()(const initializer_expression& e) {
         if (e.et()->base() != ctype::reference_t || e.et()->reference_val()->base() != ctype::array_t) {
@@ -534,17 +652,17 @@ public:
         emit_section_change("data");
         const auto l = make_label();
         emit_label(l);
-        emit("D" + data_decl_suffix(elem_t->ct()), oss.str());
-        emit_section_change("code");
-        emit("MOV", "RAX", l);
+        emit(data_decl(elem_t->ct()), oss.str());
+        emit_section_change("text");
+        emit("MOV", RAX, l);
     }
     void operator()(const array_access_expression& e) {
         const auto& at = decay(e.a().et());
         handle_and_convert(e.a(), at);
-        emit("PUSH", "RAX");
+        emit("PUSH", RAX);
         handle_and_convert(e.i(), at, true);
-        emit("POP", "RCX");
-        emit("LEA", "RAX", "[RAX+RCX]");
+        emit("POP", RCX);
+        emit("LEA", RAX, ref_RAX_RCX);
     }
     void operator()(const function_call_expression& e) {
         struct stack_arg {
@@ -579,7 +697,7 @@ public:
             stack_adj_size = stack_adj_size + round_up(sizeof_type(*t), 8);
         }
         stack_adj_size = round_up(std::max(32ULL, stack_adj_size), 16);
-        emit("SUB", "RSP", stack_adj_size);
+        emit("SUB", RSP, stack_adj_size);
 
         for (size_t i = e.args().size(); i--; ) {
             const auto bt = args[i].t->base();
@@ -588,26 +706,26 @@ public:
             }
             handle_and_convert(*e.args()[i], args[i].t);
             const bool int_arg = is_integral(bt);
-            emit(int_arg ? "MOV" : "MOVSD", reg_off_str("RSP", args[i].offset), int_arg ? "RAX" : "XMM0");
+            emit(int_arg ? "MOV" : "MOVSD", reg_off_str(reg_name::RSP, args[i].offset), int_arg ? RAX : XMM0);
         }
 
         handle(e.f());
         if(!e.args().empty()){
             for (size_t i = 0; i < std::min(4ULL, e.args().size()); ++i) {
                 const bool int_arg = is_integral(args[i].t->base());
-                emit(int_arg ? "MOV" : "MOVSD", arg_reg_name(static_cast<int>(i), int_arg), reg_off_str("RSP", args[i].offset));
+                emit(int_arg ? "MOV" : "MOVSD", arg_reg(static_cast<int>(i), int_arg), reg_off_str(reg_name::RSP, args[i].offset));
             }
         }
-        emit("CALL", "RAX");
-        emit("ADD", "RSP", stack_adj_size);        
+        emit("CALL", RAX);
+        emit("ADD", RSP, stack_adj_size);
     }
-    void operator()(const access_expression& e) {        
+    void operator()(const access_expression& e) {
         if (e.op() == token_type::arrow) {
             auto t = decay(e.e().et());
             if (t->base() == ctype::pointer_t) {
                 handle_and_convert(e.e(), t);
                 NEXT_COMMENT(*t->pointer_val() << "->" << e.m().id());
-                emit("ADD", "RAX", e.m().pos());
+                emit("ADD", RAX, e.m().pos());
                 return;
             }
         } else if (e.op() == token_type::dot) {
@@ -616,7 +734,7 @@ public:
                 if (rt.base() == ctype::struct_t || rt.base() == ctype::union_t) {
                     handle(e.e());
                     NEXT_COMMENT((rt.base() == ctype::struct_t ? rt.struct_val().id() : rt.union_val().id()) << "." << e.m().id());
-                    emit("ADD", "RAX", e.m().pos());
+                    emit("ADD", RAX, e.m().pos());
                 }
                 return;
             }
@@ -638,13 +756,13 @@ public:
             if (e.et()->ct() != ctype::bool_t) {
                 NOT_IMPLEMENTED(e << " : " << *e.et());
             }
-            emit("NOT", "AL");
+            emit("NOT", AL);
             return;
         } else if (op == token_type::minus) {
             const auto& dt = e.et();
             handle_and_convert(e.e(), dt);
             if (is_integral(dt->base())) {
-                emit("NEG", reg_name_for_type(dt->base()));
+                emit("NEG", reg_for_type(dt->base()));
                 return;
             } else if (is_floating_point(dt->base())) {
                 if (dt->base() == ctype::double_t || dt->base() == ctype::long_double_t) {
@@ -653,12 +771,12 @@ public:
                             emit_section_change("rodata");
                             emit_label("__xmm_sign64");
                             NEXT_COMMENT("64-bit signbit");
-                            emit("DQ", "0x8000000000000000");
-                            emit_section_change("code");
+                            emit(data_decl(ctype::long_long_t), "0x8000000000000000");
+                            emit_section_change("text");
                         }
                     } sign_const_;
-                    emit("MOVSD", "XMM1", "[__xmm_sign64]");
-                    emit("PXOR", "XMM0", "XMM1");
+                    emit("MOVSD", XMM1, "[__xmm_sign64]");
+                    emit("PXOR", XMM0, XMM1);
                     return;
                 }
             }
@@ -666,7 +784,7 @@ public:
             const auto& dt = e.et();
             assert(is_integral(dt->base()));
             handle_and_convert(e.e(), dt);
-            emit("NOT", reg_name_for_type(dt->base()));
+            emit("NOT", reg_for_type(dt->base()));
             return;
         }
         NOT_IMPLEMENTED(e << " : " << *e.e().et() << " --> " << *e.et());
@@ -684,16 +802,18 @@ public:
         handle_and_convert(e.e(), e.et());
     }
 
-    void push_fp(const std::string& reg = "XMM0") {
-        emit("SUB", "RSP", 8);
-        emit("MOVSD", "[RSP]", reg);
+    void push_fp(const reg& r = XMM0) {
+        emit("SUB", RSP, 8);
+        emit("MOVSD", ref_RSP, r);
     }
 
-    void pop_fp(const std::string& reg = "") {
-        if (!reg.empty()) {
-            emit("MOVSD", reg, "[RSP]");
-        }
-        emit("ADD", "RSP", 8);
+    void pop_fp() {
+        emit("ADD", RSP, 8);
+    }
+
+    void pop_fp(const reg& r) {
+        emit("MOVSD", r, ref_RSP);
+        pop_fp();
     }
 
     void handle_fp_op(const binary_expression& e) {
@@ -707,13 +827,13 @@ public:
             handle(e.l());
 
             if (e.op() == token_type::eq) {
-                pop_fp("XMM0");
+                pop_fp(XMM0);
             } else {
                 handle_load(ct);
-                emit(arit_op_name(without_assignment(e.op()), true) + suffix, "XMM0", "[RSP]");
+                emit(arit_op_name(without_assignment(e.op()), true) + suffix, XMM0, ref_RSP);
                 pop_fp();
             }
-            handle_store("[RAX]", ct);
+            handle_store(ref_RAX, ct);
             return;
         }
 
@@ -726,13 +846,13 @@ public:
         } else {
             inst = arit_op_name(e.op(), true);
         }
-        emit(inst + suffix, "XMM0", "[RSP]");
+        emit(inst + suffix, XMM0, ref_RSP);
         if (is_comparison_op(e.op())) {
             const auto l = make_label();
             // Return false if parity set (result unordered)
-            emit("XOR", "EAX", "EAX");
+            emit("XOR", EAX, EAX);
             emit("JP", l);
-            emit("SET" + std::string(compare_cond(e.op(), true)), "AL");
+            emit("SET" + std::string(compare_cond(e.op(), true)), AL);
             emit_label(l);
         }
         pop_fp();
@@ -753,7 +873,7 @@ public:
             const auto l_end  = make_label();
             NEXT_COMMENT(op << " start");
             handle_and_convert(e.l(), ct);
-            emit("TEST", "AL", "AL");
+            emit("TEST", AL, AL);
             emit(is_and ? "JZ" : "JNZ", l_end);
             handle_and_convert(e.r(), ct);
             NEXT_COMMENT(op << " end");
@@ -768,10 +888,10 @@ public:
 
         if ((ct->base() == ctype::struct_t || ct->base() == ctype::union_t) && e.op() == token_type::eq) {
             handle(e.r());
-            emit("PUSH RAX");
+            emit("PUSH", RAX);
             handle(e.l());
-            emit("MOV", "RDI", "RAX");
-            emit("POP", "RSI");
+            emit("MOV", RDI, RAX);
+            emit("POP", RSI);
             NEXT_COMMENT("Copy " << *ct);
             emit_copy(sizeof_type(*ct));
             return;
@@ -783,34 +903,34 @@ public:
 
         if (is_comparison_op(op)) {
             handle_and_convert(e.r(), ct);
-            emit("PUSH", "RAX");
+            emit("PUSH", RAX);
             handle_and_convert(e.l(), ct);
-            emit("POP", "RDX");
+            emit("POP", RDX);
             handle_compare(op, ct);
             return;
         }
 
         if (is_assignment_op(op)) {
             handle_and_convert(e.r(), ct, op != token_type::eq);
-            emit("PUSH", "RAX");
+            emit("PUSH", RAX);
             handle(e.l());
-            emit("MOV", "RCX", "RAX");
+            emit("MOV", RCX, RAX);
 
             if (op == token_type::eq) {
-                emit("POP", "RAX");
+                emit("POP", RAX);
             } else {
                 handle_load(ct);
-                emit("POP", "RDX");
+                emit("POP", RDX);
                 handle_arit_op(without_assignment(op), ct);
             }
-            handle_store("[RCX]", e.l().et()->reference_val());
+            handle_store(ref_RCX, e.l().et()->reference_val());
             return;
         }
 
         handle_and_convert(e.r(), ct, true);
-        emit("PUSH", "RAX");
+        emit("PUSH", RAX);
         handle_and_convert(e.l(), ct, true);
-        emit("POP", "RDX");
+        emit("POP", RDX);
         handle_arit_op(op, ct);
     }
 
@@ -819,7 +939,7 @@ public:
         const auto l_end = make_label();
         NEXT_COMMENT("? begin");
         handle(e.cond());
-        emit("TEST", "AL", "AL");
+        emit("TEST", AL, AL);
         emit("JZ", l_rhs);
         handle(e.l());
         emit("JMP", l_end);
@@ -853,13 +973,13 @@ public:
                     const auto l = make_label();
                     emit_label(l);
                     emit_initializer(*t, ds->init_expr());
-                    emit_section_change("code");
-                    emit("MOV", "RSI", l);
+                    emit_section_change("text");
+                    emit("MOV", RSI, l);
                 } else {
                     handle(ds->init_expr());
-                    emit("MOV", "RSI", "RAX");
+                    emit("MOV", RSI, RAX);
                 }
-                emit("LEA", "RDI", rbp_str(si.offset));
+                emit("LEA", RDI, rbp_str(si.offset));
                 emit_copy(sizeof_type(*t));
             }
         }
@@ -895,7 +1015,6 @@ public:
             handle(s.s());
             return;
         }
-        NOT_IMPLEMENTED(s);
     }
     void operator()(const compound_statement& s) {
         for (const auto& s2: s.ss()) {
@@ -910,7 +1029,7 @@ public:
         const auto l_else  = s.else_s() ? make_label() : l_end;
         NEXT_COMMENT("if start");
         handle(s.cond());
-        emit("TEST", "AL", "AL");
+        emit("TEST", AL, AL);
         emit("JZ", l_else);
         NEXT_COMMENT("if part");
         handle(s.if_s());
@@ -935,7 +1054,7 @@ public:
         NEXT_COMMENT("switch e");
         emit_label(l_e);
         handle_and_convert(s.e(), t);
-        const auto r = reg_name_for_type(t->ct());
+        const auto r = reg_for_type(t->ct());
         for (const auto& c: sn.cases()) {
             emit("CMP", r, cast(c.first, t->ct()));
             emit("JE", c.second);
@@ -956,7 +1075,7 @@ public:
         NEXT_COMMENT("while cond");
         emit_label(l_start);
         handle(s.cond());
-        emit("TEST", "AL", "AL");
+        emit("TEST", AL, AL);
         emit("JZ", l_end);
         NEXT_COMMENT("while body");
         handle(s.s());
@@ -976,7 +1095,7 @@ public:
         NEXT_COMMENT("do cond");
         emit_label(l_cond);
         handle(s.cond());
-        emit("TEST", "AL", "AL");
+        emit("TEST", AL, AL);
         emit("JNZ", l_start);
         NEXT_COMMENT("do end");
         emit_label(l_end);
@@ -991,7 +1110,7 @@ public:
         emit_label(l_start);
         if (s.cond()) {
             handle(*s.cond());
-            emit("TEST", "AL", "AL");
+            emit("TEST", AL, AL);
             emit("JZ", l_end);
         }
         NEXT_COMMENT("for body");
@@ -1155,11 +1274,11 @@ private:
    void handle_function(const init_decl& d)  {
        syms_.push_back(sym_info{&d.sym(), 0});
 
-        emit_section_change("code");
+        emit_section_change("text");
         NEXT_COMMENT(d.d());
         emit_label(name_mangle(d.d().id()));
-        emit("PUSH", "RBP");
-        emit("MOV", "RBP", "RSP");
+        emit("PUSH", RBP);
+        emit("MOV", RBP, RSP);
 
         assert(local_labels_.empty());
         int offset = 0x10;
@@ -1178,9 +1297,9 @@ private:
 
             if (arg_cnt < 4) {
                 if (!is_arithmetic(t->base()) && t->base() != ctype::pointer_t && t->base() != ctype::array_t) NOT_IMPLEMENTED(decl(t, s->id()));
-                NEXT_COMMENT(s->id());                
+                NEXT_COMMENT(s->id());
                 const bool int_arg = is_integral(t->base());
-                emit(int_arg ? "MOV" : "MOVSD", rbp_str(offset), arg_reg_name(arg_cnt, int_arg));
+                emit(int_arg ? "MOV" : "MOVSD", rbp_str(offset), arg_reg(arg_cnt, int_arg));
             }
 
             offset += static_cast<int>(round_up(size, 8));
@@ -1189,7 +1308,7 @@ private:
         const auto& ls = scope_children(d.local_scope());
         assert(ls.size() == 1);
         const auto local_size = handle_locals(*ls[0], 16);
-        emit("SUB","RSP", round_up(local_size, 16));
+        emit("SUB", RSP, round_up(local_size, 16));
         assert(end_label_.empty());
         end_label_ = make_label();
         func_ret_type_ = d.d().t()->function_val().ret_type();
@@ -1199,41 +1318,28 @@ private:
         end_label_.clear();
         func_ret_type_.reset();
         local_labels_.clear();
-        emit("MOV", "RSP", "RBP");
-        emit("POP", "RBP");
-        emit("RET");                
+        emit("MOV", RSP, RBP);
+        emit("POP", RBP);
+        emit("RET");
     }
 
     void emit_string_literal(const std::string& text, size_t min_size) {
         std::ostringstream oss;
-        std::string accum;
-        auto dump_str = [&]() {
-            if (!accum.empty()) {
-                if (!oss.str().empty())
-                    oss << ", ";
-                oss << "'" << accum << "'";
-                accum.clear();
-            }
-        };
+        oss << "\"";
         for (const auto c : text) {
-            if (c < 32 || c > 127 || c == '\'') {
-                dump_str();
-                if (!oss.str().empty())
-                    oss << ", ";
-                oss << static_cast<int>(c);
+            if (c < 32 || c > 127 || c == '\"') {
+                const char* od = "01234567";
+                oss << "\\" << od[(c>>6)&7] << od[(c>>3)&7] << od[c&7];
             } else {
-                accum += c;
+                oss << c;
             }
         }
-        dump_str();
-        if (!oss.str().empty())
-            oss << ", ";
         for (size_t i = text.size() + 1; i < min_size; ++i) {
-            oss << "0, ";
+            oss << "\000";
         }
-        oss << "0";
+        oss << "\"";
 
-        emit("DB", oss.str());
+        emit(".asciz", oss.str());
     }
 
     void emit_initializer(const type& t, const expression& init) {
@@ -1253,7 +1359,7 @@ private:
                if (missing < 0) {
                    NOT_IMPLEMENTED(t << " " << init << " missing: " << missing);
                }
-               for (const auto& e: il->es()) {                   
+               for (const auto& e: il->es()) {
                    emit_initializer(*av.t(), *e);
                }
                if (missing) {
@@ -1286,7 +1392,7 @@ private:
             }
 
             const auto& last_initialized_member = sv.members()[il->es().size()-1];
-            const auto extra = sv.size() - (last_initialized_member.pos() + sizeof_type(*last_initialized_member.t())); 
+            const auto extra = sv.size() - (last_initialized_member.pos() + sizeof_type(*last_initialized_member.t()));
 
             if (extra) {
                 NEXT_COMMENT(extra << " bytes of padding" << (il->es().size() == sv.members().size() ? "" : " and missing initializers"));
@@ -1294,25 +1400,26 @@ private:
             }
             return;
         } else if (t.base() == ctype::pointer_t) {
+            const auto decl = data_decl(t.ct());
             if (auto sl = dynamic_cast<const string_lit_expression*>(&init)) {
                 if (sizeof_type(*t.pointer_val()) != 1) {
                     NOT_IMPLEMENTED(t << " " << init);
                 }
-                emit("DQ", add_string_lit(sl->text()));
+                emit(decl, add_string_lit(sl->text()));
                 return;
             } else if (auto ce = dynamic_cast<const cast_expression*>(&init); ce && ce->et()->base() == ctype::pointer_t) {
                 // HACK HACK
                 const auto ival = const_int_eval(ce->e());
-                emit("DQ", ival);
+                emit(decl, ival);
                 return;
             }
-            emit("DQ", const_int_eval(init).val);
+            emit(decl, const_int_eval(init).val);
             return;
         } else if (!is_integral(t.base())) {
             NOT_IMPLEMENTED(t << " " << init);
         }
 
-        emit("D"+data_decl_suffix(t.ct()), const_int_eval(init).val);
+        emit(data_decl(t.ct()), const_int_eval(init).val);
     }
 
     static bool is_const_init_type(const type& t) {
@@ -1328,7 +1435,7 @@ private:
         if (!sym.definition() || !sym.definition()->has_init_val()) {
             emit_section_change("bss");
             emit_label(l);
-            emit("RESB", sizeof_type(t));
+            emit(".skip", sizeof_type(t));
             return;
         }
 
@@ -1366,9 +1473,9 @@ private:
         NEXT_COMMENT("Conversion from " << *src << " to " << *dst);
 
         if (dst->base() == ctype::bool_t) {
-            const auto r = reg_name_for_type(src->ct());
+            const auto r = reg_for_type(src->ct());
             emit("TEST", r, r);
-            emit("SETNZ", "AL");
+            emit("SETNZ", AL);
             return;
         }
 
@@ -1377,7 +1484,7 @@ private:
                 // MOVZX RAX, EAX isn't valid
                 return;
             }
-            emit(zero_ext ? "MOVZX" : "MOVSX", "RAX", reg_name_for_type(src->ct()));
+            emit(zero_ext ? "MOVZX" : "MOVSX", RAX, reg_for_type(src->ct()));
         };
 
         if (is_integral(src->base()) && is_integral(dst->base())) {
@@ -1399,7 +1506,7 @@ private:
             if (scale_pointers) {
                 const auto element_size = sizeof_type(*dst->pointer_val());
                 if (element_size > 1) {
-                    emit("IMUL", "RAX", element_size);
+                    emit("IMUL", RAX, element_size);
                 }
             }
             return;
@@ -1411,15 +1518,15 @@ private:
                 if (src->base() < ctype::int_t) {
                     extend_int(!!(src->base() & ctype::unsigned_f));
                 }
-                emit("CVTSI2S" + suffix, "XMM0", src->base() <= ctype::int_t ? "EAX" : "RAX");
+                emit("CVTSI2S" + suffix, XMM0, src->base() <= ctype::int_t ? EAX : RAX);
                 return;
             } else if (src->base() == ctype::float_t) {
                 assert(suffix == "D");
-                emit("CVTSD2SS", "XMM0", "XMM0");
+                emit("CVTSD2SS", XMM0, XMM0);
                 return;
             } else if (src->base() == ctype::double_t || src->base() == ctype::long_double_t) {
                 if (dst->base() == ctype::float_t) {
-                    emit("CVTSS2SD", "XMM0", "XMM0");
+                    emit("CVTSS2SD", XMM0, XMM0);
                 }
                 return;
             }
@@ -1427,11 +1534,11 @@ private:
 
         if (is_floating_point(src->ct()) && is_integral(dst->ct())) {
             const std::string suffix = src->base() == ctype::float_t ? "S" : "D";
-            emit("CVTS" + suffix + "2SI", dst->base() <= ctype::int_t ? "EAX" : "RAX", "XMM0");
+            emit("CVTS" + suffix + "2SI", dst->base() <= ctype::int_t ? EAX : RAX, XMM0);
             return;
         }
 
-        
+
         NOT_IMPLEMENTED("conversion from " << *src << " to " << *dst << " scale_pointers = " << scale_pointers);
    }
 
@@ -1440,7 +1547,8 @@ private:
         handle_conversion(t, e.et(), scale_pointers);
     }
 
-    void handle_load_store(const std::string& addr, const type_ptr& t, bool is_store) {
+    template<typename Addr>
+    void handle_load_store(const Addr& addr, const type_ptr& t, bool is_store) {
         if (is_store) {
             NEXT_COMMENT("Store as " << *t);
         } else {
@@ -1449,31 +1557,33 @@ private:
         if (is_floating_point(t->base())) {
             const auto inst = t->base() == ctype::float_t ? "MOVSS" : "MOVSD";
             if (is_store) {
-                emit(inst, addr, "XMM0");
+                emit(inst, addr, XMM0);
             } else {
-                emit(inst, "XMM0", addr);
+                emit(inst, XMM0, addr);
             }
             return;
         }
 
-        std::string r = reg_name_for_type(t->base());
+        const auto r = reg_for_type(t->base());
         if (is_store) {
             emit("MOV", addr, r);
         } else {
             emit("MOV", r, addr);
         }
     }
-    
-    void handle_store(const std::string& addr, const type_ptr& t) {
+
+    template<typename Addr>
+    void handle_store(const Addr& addr, const type_ptr& t) {
         handle_load_store(addr, t, true);
     }
 
-    void handle_load(const std::string& addr, const type_ptr& t) {
+    template<typename Addr>
+    void handle_load(const Addr& addr, const type_ptr& t) {
         handle_load_store(addr, t, false);
     }
 
     void handle_load(const type_ptr& t) {
-        handle_load("[RAX]", t);
+        handle_load(ref_RAX, t);
     }
 
     // Assumes ops in RAX,RDX (for int/pointer values)
@@ -1482,8 +1592,8 @@ private:
         if (!is_integral(b) && b != ctype::pointer_t) {
             NOT_IMPLEMENTED(op << " " << *t);
         }
-        emit("CMP", reg_name_for_type(b, RAX), reg_name_for_type(b, RDX));
-        emit("SET" + std::string(compare_cond(op, unsigned_arit(t->ct()))), "AL");
+        emit("CMP", reg_for_type(b, reg_name::RAX), reg_for_type(b, reg_name::RDX));
+        emit("SET" + std::string(compare_cond(op, unsigned_arit(t->ct()))), AL);
     }
     // Assumes ops in RAX,RDX (for int/pointer values)
     void handle_arit_op(token_type op, const type_ptr& t) {
@@ -1493,15 +1603,15 @@ private:
         }
         const auto inst = arit_op_name(op, unsigned_arit(t->ct()));
         if (op == token_type::star || op == token_type::div || op == token_type::mod) {
-            emit(inst, reg_name_for_type(b, RDX));
+            emit(inst, reg_for_type(b, reg_name::RDX));
             if (op == token_type::mod) {
-                emit("MOV", "RAX", "RDX");
+                emit("MOV", RAX, RDX);
             }
         } else if (op == token_type::lshift || op == token_type::rshift) {
-            emit("MOV", "RCX", "RDX");
-            emit(inst, reg_name_for_type(b, RAX), "CL");
+            emit("MOV", RCX, RDX);
+            emit(inst, reg_for_type(b, reg_name::RAX), CL);
         } else {
-            emit(inst, reg_name_for_type(b, RAX), reg_name_for_type(b, RDX));
+            emit(inst, reg_for_type(b, reg_name::RAX), reg_for_type(b, reg_name::RDX));
         }
     }
 
@@ -1511,22 +1621,24 @@ private:
 
         if (is_integral(t->base()) || t->base() == ctype::pointer_t) {
             auto e = [&]() {
+                std::ostringstream oss;
+                oss << op_size_str(t->base()) << ref_RAX;
                 if (t->base() == ctype::pointer_t) {
-                    emit(plus ? "ADD" : "SUB", "qword [RAX]", sizeof_type(*t->pointer_val()));
+                    emit(plus ? "ADD" : "SUB", oss.str(), sizeof_type(*t->pointer_val()));
                 } else {
-                    emit(plus ? "INC" : "DEC", op_size_str(t->base()) + "[RAX]");
+                    emit(plus ? "INC" : "DEC", oss.str());
                 }
             };
             if (is_prefix) {
                 e();
                 handle_load(t);
             } else {
-                emit("PUSH", "RAX");
+                emit("PUSH", RAX);
                 handle_load(t);
-                emit("MOV", "RCX", "RAX");
-                emit("POP", "RAX");
+                emit("MOV", RCX, RAX);
+                emit("POP", RAX);
                 e();
-                emit("MOV", "RAX", "RCX");
+                emit("MOV", RAX, RCX);
             }
             return;
         }
@@ -1540,7 +1652,7 @@ void process_one(source_manager& sm, const std::string& filename) {
     const auto pr = parse(sm, sm.load(filename));
     std::cerr << "Generating code...\n";
     vis.do_all(pr);
-} 
+}
 
 int main(int argc, char* argv[]) {
     try {
@@ -1564,8 +1676,10 @@ int main(int argc, char* argv[]) {
         if (files.empty()) {
             NOT_IMPLEMENTED("No files found");
         }
-        define_standard_headers(sm);
-        define_posix_headers(sm);
+        sm.define_standard_headers("x86intrin.h", "");
+        sm.define_standard_headers("emmintrin.h", "");
+        sm.define_standard_headers("psdk_inc/intrin-impl.h", "");
+
         for (const auto& f: files) {
             process_one(sm, f);
         }

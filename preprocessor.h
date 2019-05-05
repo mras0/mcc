@@ -20,7 +20,7 @@ enum class pp_token_type {
     character_constant,
     string_literal,
     punctuation,
-    eof
+    eof,
 };
 
 std::ostream& operator<<(std::ostream& os, pp_token_type type);
@@ -68,8 +68,6 @@ private:
     std::unique_ptr<impl> impl_;
 };
 
-void define_standard_headers(source_manager& sm);
-void define_posix_headers(source_manager& sm);
 const char* standard_builtin_text();
 
 }

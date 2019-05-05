@@ -338,6 +338,7 @@ const struct_union_member& find_struct_union_member(const type_ptr& t, const std
 
 void symbol::declare(const type_ptr& t, bool is_definition) {
     assert(t);
+
     if (declaration_) {
         if (!redecl_type_compare(*declaration_, *t)) {
             NOT_IMPLEMENTED(id_ << " already declared as " << *declaration_ << " invalid redeclaration as " << *t);
@@ -514,6 +515,7 @@ public:
     parse_result parse() {
         try {
             push_scope global_scope{*this};
+            
             init_decl_list res;
             while (current().type() != token_type::eof) {
                 if (current().type() == token_type::semicolon) {
@@ -974,7 +976,9 @@ private:
                 continue;
             }
 
-            if (t == token_type::id) {
+            // Don't check typedefs if we already have a "primary" type
+            // this should handle e.g. typedef struct S {} S; struct T { S S; };
+            if (res_type->base() == ctype::none && t == token_type::id) {
                 auto sym = id_lookup(current().text());
                 if (sym && !!(sym->decl_type()->ct() & ctype::typedef_f)) {
                     next();
@@ -989,7 +993,11 @@ private:
             break;
         }
 
-        if (!long_ && !int_ && sign == -1 && res_type->base() != ctype::none) {
+        if (sign == 0) {
+            res_type->add_flags(ctype::unsigned_f);
+        }
+
+        if (!long_ && !int_ && res_type->base() != ctype::none && (sign == -1 || is_integral(res_type->base()))) {
             return res_type;
         }
 
@@ -997,10 +1005,6 @@ private:
         if (long_ == 1 && !int_ && sign == -1 && res_type->base() == ctype::double_t) {
             res_type->set_base_type(ctype::long_double_t);
             return res_type;
-        }
-
-        if (sign == 0) {
-            res_type->add_flags(ctype::unsigned_f);
         }
 
         // short int/int/long int/long long int
@@ -1027,7 +1031,7 @@ private:
             return res_type;
         }
 
-        NOT_IMPLEMENTED(*res_type << " long: " << long_ << " int: " << int_ << " sign: " << sign << " current: " << current());
+        NOT_IMPLEMENTED(*res_type << ", long: " << long_ << " int: " << int_ << " sign: " << sign << " current: " << current());
     }
 
     decl parse_declarator(std::shared_ptr<const type> t) {
