@@ -586,7 +586,11 @@ public:
     }
 
     void handle(const expression& e) {
-        return visit(*this, e);
+        NEXT_COMMENT("START OF " << e << " : " << *e.et());
+        emit("NOP");
+        visit(*this, e);
+        NEXT_COMMENT("END OF " << e << " : " << *e.et());
+        emit("NOP");
     }
 
     void handle(const statement& s) {
@@ -748,7 +752,12 @@ public:
             handle(e.e());
             handle_incr_decr(op, e.e().et()->reference_val(), true);
             return;
-        } else if (op == token_type::star || op == token_type::and_) {
+        } else if (op == token_type::star) {
+            // pointer -> reference
+            handle_and_convert(e.e(), e.et()->reference_val());
+            return;
+        } else if (op == token_type::and_) {
+            // reference -> pointer
             handle(e.e());
             return;
         } else if (op == token_type::not_) {
@@ -942,7 +951,7 @@ public:
         const auto l_rhs = make_label();
         const auto l_end = make_label();
         NEXT_COMMENT("? begin");
-        handle(e.cond());
+        handle_and_convert(e.cond(), std::make_shared<type>(ctype::bool_t));
         emit("TEST", AL, AL);
         emit("JZ", l_rhs);
         handle(e.l());
@@ -1036,7 +1045,7 @@ public:
         const auto l_end   = make_label();
         const auto l_else  = s.else_s() ? make_label() : l_end;
         NEXT_COMMENT("if start");
-        handle(s.cond());
+        handle_and_convert(s.cond(), std::make_shared<type>(ctype::bool_t));
         emit("TEST", AL, AL);
         emit("JZ", l_else);
         NEXT_COMMENT("if part");
@@ -1079,10 +1088,10 @@ public:
         const auto l_start = make_label();
         const auto l_end   = make_label();
         label_stack_node bl{break_labels_, l_end};
-        label_stack_node cl{continue_labels_, l_end};
+        label_stack_node cl{continue_labels_, l_start};
         NEXT_COMMENT("while cond");
         emit_label(l_start);
-        handle(s.cond());
+        handle_and_convert(s.cond(), std::make_shared<type>(ctype::bool_t));
         emit("TEST", AL, AL);
         emit("JZ", l_end);
         NEXT_COMMENT("while body");
@@ -1102,7 +1111,7 @@ public:
         handle(s.s());
         NEXT_COMMENT("do cond");
         emit_label(l_cond);
-        handle(s.cond());
+        handle_and_convert(s.cond(), std::make_shared<type>(ctype::bool_t));
         emit("TEST", AL, AL);
         emit("JNZ", l_start);
         NEXT_COMMENT("do end");
@@ -1117,7 +1126,7 @@ public:
         NEXT_COMMENT("for cond");
         emit_label(l_start);
         if (s.cond()) {
-            handle(*s.cond());
+            handle_and_convert(*s.cond(), std::make_shared<type>(ctype::bool_t));
             emit("TEST", AL, AL);
             emit("JZ", l_end);
         }
@@ -1609,12 +1618,33 @@ private:
         if (!is_integral(b) && b != ctype::pointer_t) {
             NOT_IMPLEMENTED(op << " " << *t);
         }
-        const auto inst = arit_op_name(op, unsigned_arit(t->ct()));
-        if (op == token_type::star || op == token_type::div || op == token_type::mod) {
+        const bool is_unsigned = unsigned_arit(t->ct());
+        const auto inst = arit_op_name(op, is_unsigned);
+        if (op == token_type::star) {
             emit(inst, reg_for_type(b, reg_name::RDX));
+        } else if (op == token_type::div || op == token_type::mod) {
+            emit("PUSH", RBX);
+            emit("MOV", RBX, RDX);
+            if (is_unsigned) {
+                if (sizeof_type(t->ct()) < 2) {
+                    // XOR AH, AH
+                    NOT_IMPLEMENTED(*t);
+                }
+                emit("XOR", RDX, RDX);
+            } else {
+                switch (sizeof_type(t->ct())) {
+                case 1: emit("CBW"); break;
+                case 2: emit("CWD"); break;
+                case 4: emit("CDQ"); break;
+                case 8: emit("CDO"); break;
+                default: NOT_IMPLEMENTED(*t);
+                }
+            }
+            emit(inst, reg_for_type(b, reg_name::RBX));
             if (op == token_type::mod) {
                 emit("MOV", RAX, RDX);
             }
+            emit("POP", RBX);
         } else if (op == token_type::lshift || op == token_type::rshift) {
             emit("MOV", RCX, RDX);
             emit(inst, reg_for_type(b, reg_name::RAX), CL);

@@ -1209,8 +1209,8 @@ const char* standard_builtin_text() {
 #define _VA_LIST_DEFINED 1
 typedef char* __builtin_va_list;
 #define va_list __builtin_va_list
-#define __builtin_va_start(ap, param) (ap = (char*)&param)
-#define __builtin_va_arg(ap, t) *(t*)((ap += 8) - 8)
+#define __builtin_va_start(ap, param) ((ap) = (char*)&(param) + 8)
+#define __builtin_va_arg(ap, t) *(t*)(((ap) += 8) - 8)
 #define __builtin_va_copy(dst, src) ((dst) = (src))
 #define __builtin_va_end(ap)
 
