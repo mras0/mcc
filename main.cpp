@@ -2,6 +2,7 @@
 #include <variant>
 #include <map>
 #include <set>
+#include <cstring>
 
 #include "util.h"
 #include "source.h"
@@ -478,8 +479,9 @@ std::string op_size_str(ctype t) {
     case ctype::pointer_t:
     case ctype::long_long_t:
         return "QWORD PTR ";
+    default:
+        NOT_IMPLEMENTED(t);
     }
-    NOT_IMPLEMENTED(t);
 }
 
 bool unsigned_arit(ctype t)  {
@@ -499,8 +501,8 @@ std::string arit_op_name(token_type t, bool is_unsigned) {
     case token_type::or_:    return "OR";
     case token_type::lshift: return is_unsigned ? "SHL" : "SAL";
     case token_type::rshift: return is_unsigned ? "SHR" : "SAR";
+    default:                 NOT_IMPLEMENTED(t);
     }
-    NOT_IMPLEMENTED(t);
 }
 
 std::string data_decl(ctype ct) {
@@ -516,8 +518,9 @@ std::string data_decl(ctype ct) {
     case ctype::long_long_t:
     case ctype::pointer_t:
         return ".quad";
+    default:
+        NOT_IMPLEMENTED(ct);
     }
-    NOT_IMPLEMENTED(ct);
 }
 
 reg arg_reg(int n, bool integral) {
@@ -718,6 +721,11 @@ public:
             for (size_t i = 0; i < std::min(4ULL, e.args().size()); ++i) {
                 const bool int_arg = !is_floating_point(args[i].t->base());
                 emit(int_arg ? "MOV" : "MOVSD", arg_reg(static_cast<int>(i), int_arg), reg_off_str(reg_name::RSP, args[i].offset));
+                if (!int_arg && ft->function_val().variadic()) {
+                    // https://docs.microsoft.com/en-us/cpp/build/x64-calling-convention?view=vs-2019#varargs
+                    // For floating-point values only, both the integer register and the floating-point register must contain the value, in case the callee expects the value in the integer registers.
+                    emit("MOVQ", arg_reg(static_cast<int>(i), true), arg_reg(static_cast<int>(i), false));
+                }
             }
         }
         emit("CALL", RAX);
@@ -977,7 +985,7 @@ public:
             NEXT_COMMENT(ds->sym().id());
             const auto& si = find_sym(ds->sym());
             const auto& t = si.sym->decl_type();
-            if (is_integral(t->base()) || t->base() == ctype::pointer_t) {
+            if (is_arithmetic(t->base()) || t->base() == ctype::pointer_t) {
                 handle_and_convert(ds->init_expr(), t);
                 handle_store(rbp_str(si.offset), t);
             } else {
@@ -1344,7 +1352,7 @@ private:
         std::ostringstream oss;
         oss << "\"";
         for (const auto c : text) {
-            if (c < 32 || c > 127 || c == '\"') {
+            if (static_cast<unsigned char>(c) < 32 || c == '\"') {
                 const char* od = "01234567";
                 oss << "\\" << od[(c>>6)&7] << od[(c>>3)&7] << od[c&7];
             } else {
@@ -1467,6 +1475,11 @@ private:
             // Assume types have been checked elsewhere
             return;
         }
+        if (dst->base() == ctype::struct_t && (src->base() == ctype::pointer_t && src->pointer_val()->base() == ctype::struct_t)) {
+            // Should only be encountered in some_struct = *ptr_to_struct;
+            assert(&dst->struct_val() == &src->pointer_val()->struct_val());
+            return;
+        }
         if (types_equal(*dst, *src)) {
             return;
         }
@@ -1554,7 +1567,6 @@ private:
             emit("CVTS" + suffix + "2SI", dst->base() <= ctype::int_t ? EAX : RAX, XMM0);
             return;
         }
-
 
         NOT_IMPLEMENTED("conversion from " << *src << " to " << *dst << " scale_pointers = " << scale_pointers);
    }

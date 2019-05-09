@@ -467,8 +467,8 @@ size_t sizeof_type(ctype ct) {
     case ctype::long_double_t:  return 8;
     case ctype::pointer_t:      return pointer_size;
     case ctype::enum_t:         return sizeof_type(ctype::int_t);
+    default:                    NOT_IMPLEMENTED(ct);
     }
-    NOT_IMPLEMENTED(ct);
 }
 
 size_t sizeof_type(const type& t) {

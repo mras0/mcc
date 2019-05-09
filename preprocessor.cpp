@@ -3,6 +3,7 @@
 
 #include <optional>
 #include <map>
+#include <cstring>
 
 //#define PP_DEBUG
 
@@ -57,7 +58,7 @@ bool is_whitespace(int ch) {
 }
 
 bool is_punct_char(int ch) {
-    return strchr("{}[]#()<>%:;.?*+-/^&|~!=,", ch) != nullptr;
+    return std::strchr("{}[]#()<>%:;.?*+-/^&|~!=,", ch) != nullptr;
 }
 
 size_t punct_length(std::string_view s) {

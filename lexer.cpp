@@ -1,5 +1,6 @@
 #include "lexer.h"
 #include "util.h"
+#include <cmath>
 
 namespace mcc {
 
