@@ -685,9 +685,11 @@ public:
 
         size_t stack_adj_size = 0;
 
+        bool need_deref = false;
         auto ft = to_rvalue(e.f().et());
         if (ft->base() == ctype::pointer_t) {
             ft = ft->pointer_val();
+            need_deref = true;
         }
         if (ft->base() != ctype::function_t) {
             NOT_IMPLEMENTED(e << " : " << *ft);
@@ -721,7 +723,11 @@ public:
             emit(int_arg ? "MOV" : "MOVSD", reg_off_str(reg_name::RSP, args[i].offset), int_arg ? RAX : XMM0);
         }
 
+        NEXT_COMMENT(e.f() << " : " << *e.et());
         handle(e.f());
+        if (need_deref) {
+            handle_load(e.f().et()->reference_val());
+        }
         if(!e.args().empty()){
             for (size_t i = 0; i < std::min(4ULL, e.args().size()); ++i) {
                 const bool int_arg = !is_floating_point(args[i].t->base());
@@ -1483,6 +1489,7 @@ private:
     }
 
    void handle_conversion(const type_ptr& dst, const type_ptr& src, bool scale_pointers = false) {
+        NEXT_COMMENT("Conversion from " << *src << " to " << *dst);
         if (src->base() == ctype::pointer_t && (dst->base() == ctype::pointer_t || types_equal(*src->pointer_val(), *dst))) {
             // Logic elsewhere handles actual dereferencing
             return;
@@ -1507,7 +1514,6 @@ private:
             }
             return;
         }
-        NEXT_COMMENT("Conversion from " << *src << " to " << *dst);
 
         if (dst->base() == ctype::bool_t) {
             const auto r = reg_for_type(src->ct());
