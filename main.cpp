@@ -523,6 +523,13 @@ std::string data_decl(ctype ct) {
     }
 }
 
+void emit_double_decl(double dval) {
+    uint64_t uval;
+    std::memcpy(&uval, &dval, sizeof(double));
+    NEXT_COMMENT(dval);
+    emit(".quad", uval);
+}
+
 reg arg_reg(int n, bool integral) {
     const reg iarg_regs[4] = { RCX, RDX, R8, R9 };
     const reg farg_regs[4] = { XMM0, XMM1, XMM2, XMM3 };
@@ -620,6 +627,7 @@ public:
     void operator()(const const_int_expression& e) {
         emit("MOV", RAX, e.val().val);
     }
+
     void operator()(const const_float_expression& e) {
         const double dval = e.val();
         if (dval == 0.0) {
@@ -629,12 +637,9 @@ public:
         }
 
         emit_section_change("rodata");
-        uint64_t uval;
-        std::memcpy(&uval, &dval, sizeof(double));
         const auto l = make_label();
         emit_label(l);
-        NEXT_COMMENT(dval);
-        emit(data_decl(ctype::long_long_t), uval);
+        emit_double_decl(dval);
         emit_section_change("text");
         emit("MOVSD", XMM0, "[" + l + "]");
     }
@@ -997,7 +1002,7 @@ public:
                     emit_label(l);
                     emit_initializer(*t, ds->init_expr());
                     emit_section_change("text");
-                    emit("MOV", RSI, l);
+                    emit("LEA", RSI, l);
                 } else {
                     handle(ds->init_expr());
                     emit("MOV", RSI, RAX);
@@ -1440,6 +1445,13 @@ private:
             }
             emit(decl, const_int_eval(init).val);
             return;
+        } else if (is_floating_point(t.base())) {
+            auto cfe = dynamic_cast<const const_float_expression*>(&init);
+            if (!cfe) {
+                NOT_IMPLEMENTED(t << " " << init);
+            }
+            emit_double_decl(cfe->val());
+            return;
         } else if (!is_integral(t.base())) {
             NOT_IMPLEMENTED(t << " " << init);
         }
@@ -1471,13 +1483,8 @@ private:
     }
 
    void handle_conversion(const type_ptr& dst, const type_ptr& src, bool scale_pointers = false) {
-        if (dst->base() == ctype::pointer_t && src->base() == ctype::pointer_t) {
-            // Assume types have been checked elsewhere
-            return;
-        }
-        if (dst->base() == ctype::struct_t && (src->base() == ctype::pointer_t && src->pointer_val()->base() == ctype::struct_t)) {
-            // Should only be encountered in some_struct = *ptr_to_struct;
-            assert(&dst->struct_val() == &src->pointer_val()->struct_val());
+        if (src->base() == ctype::pointer_t && (dst->base() == ctype::pointer_t || types_equal(*src->pointer_val(), *dst))) {
+            // Logic elsewhere handles actual dereferencing
             return;
         }
         if (types_equal(*dst, *src)) {
@@ -1524,7 +1531,7 @@ private:
             return;
         }
 
-        if (src->base() == ctype::pointer_t && is_integral(dst->base())) {
+        if (is_integral(dst->base()) && src->base() == ctype::pointer_t) {
             return;
         }
 

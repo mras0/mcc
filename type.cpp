@@ -521,6 +521,8 @@ bool types_equal(const type& l, const type& r) {
         return types_equal(*l.pointer_val(), *r.pointer_val());
     } else if (b == ctype::struct_t) {
         return &l.struct_val() == &r.struct_val();
+    } else if (b == ctype::union_t) {
+        return &l.union_val() == &r.union_val();
     }
     NOT_IMPLEMENTED(l);
 }
