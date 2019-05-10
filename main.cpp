@@ -785,6 +785,7 @@ public:
                 NOT_IMPLEMENTED(e << " : " << *e.et());
             }
             emit("NOT", AL);
+            emit("AND", AL, "0x01");
             return;
         } else if (op == token_type::minus) {
             const auto& dt = e.et();

@@ -1568,7 +1568,7 @@ private:
                 } else {
                     check_convertible(dlt, rt);
                 }
-                t = op == token_type::eq ? lt : dlt;
+                t = dlt;
                 common_t = dlt;
             } else if (is_comparison_op(op)) {
                 if (lp) handle_const_null(rt, *rhs);
