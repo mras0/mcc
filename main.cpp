@@ -1726,8 +1726,9 @@ private:
             }
             emit("POP", RBX);
         } else if (op == token_type::lshift || op == token_type::rshift) {
-            emit("MOV", RCX, RDX);
+            emit("XCHG", RCX, RDX);
             emit(inst, reg_for_type(b, reg_name::RAX), CL);
+            emit("XCHG", RCX, RDX);
         } else {
             emit(inst, reg_for_type(b, reg_name::RAX), reg_for_type(b, reg_name::RDX));
         }
