@@ -223,7 +223,7 @@ struct const_int_evaluator {
         if (e.op() == token_type::and_) {
             // HACK to support offsetof
             if (auto ae = dynamic_cast<const access_expression*>(&e.e())) {
-                return const_int_val{ae->m().pos(), ctype::long_long_t | ctype::unsigned_f};
+                return const_int_val{ae->offset(), ctype::long_long_t | ctype::unsigned_f};
             }
             NOT_IMPLEMENTED(e);
         }
@@ -316,22 +316,22 @@ const_int_val const_int_eval(const expression& e) {
 #define EXPECT(tok) do { if (current().type() != token_type::tok) NOT_IMPLEMENTED("Expected " << token_type::tok << " got " << current()); next(); } while (0)
 #define TRACE(msg) std::cerr << __FILE__ << ":" << __LINE__ << ": " << __func__ <<  " Current: " << current() << " " << msg << "\n"
 
-const struct_union_member* search_decl(const type_ptr& t, const std::string_view id) {
+std::pair<const struct_union_member*, size_t> search_decl(const type_ptr& t, const std::string_view id) {
     for (const auto& m: struct_union_members(*t)) {
         if (m.id().empty()) {
-            if (auto d = search_decl(m.t(), id)) {
-                return d;
+            if (auto [im, offset] = search_decl(m.t(), id); im) {
+                return { im, m.pos() + offset };
             }
         } else if (m.id() == id) {
-            return &m;
+            return { &m, m.pos() };
         }
     }
-    return nullptr;
+    return {nullptr, 0};
 }
 
-const struct_union_member& find_struct_union_member(const type_ptr& t, const std::string_view id) {
-    if (auto d = search_decl(t, id)) {
-        return *d;
+std::pair<const struct_union_member&, size_t> find_struct_union_member(const type_ptr& t, const std::string_view id) {
+    if (auto [d, offset] = search_decl(t, id); d) {
+        return {*d, offset};
     }
     NOT_IMPLEMENTED(id << " not found in " << *t);
 }
@@ -1431,14 +1431,14 @@ private:
                 next();
                 const auto id = current().text();
                 EXPECT(id);
-                const auto& m = find_struct_union_member(et, id);
+                const auto& [m, offset] = find_struct_union_member(et, id);
                 auto mt = m.t();
                 if (!!(et->ct() & ctype::cvr_f)) {
                     std::shared_ptr<type> temp = std::make_shared<type>(*m.t());
                     temp->add_flags(et->ct() & ctype::cvr_f);
                     mt = temp;
                 }
-                e = std::make_unique<access_expression>(expression_start, make_ref_t(m.t()), t, std::move(e), m);
+                e = std::make_unique<access_expression>(expression_start, make_ref_t(m.t()), t, std::move(e), offset, m);
             } else if (t == token_type::plusplus
                 || t == token_type::minusminus) {
                 next();

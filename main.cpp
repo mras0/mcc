@@ -784,7 +784,7 @@ public:
             if (t->base() == ctype::pointer_t) {
                 handle_and_convert(e.e(), t);
                 NEXT_COMMENT(*t->pointer_val() << "->" << e.m().id());
-                emit("ADD", RAX, e.m().pos());
+                emit("ADD", RAX, e.offset());
                 return;
             }
         } else if (e.op() == token_type::dot) {
@@ -793,7 +793,7 @@ public:
                 if (rt.base() == ctype::struct_t || rt.base() == ctype::union_t) {
                     handle(e.e());
                     NEXT_COMMENT((rt.base() == ctype::struct_t ? rt.struct_val().id() : rt.union_val().id()) << "." << e.m().id());
-                    emit("ADD", RAX, e.m().pos());
+                    emit("ADD", RAX, e.offset());
                 }
                 return;
             }
