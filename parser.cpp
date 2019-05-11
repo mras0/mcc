@@ -697,6 +697,10 @@ private:
                 d = decl{std::make_shared<type>(ct), d.id()};
             }
 
+            if (d.id().empty()) {
+                NOT_IMPLEMENTED(d);
+            }
+
             if (!parsing_struct_or_union) {
                 // To support "struct S* s = malloc(*s)" we need to define "s" before parsing the initializer
                 // Same for int x, *y=&x;
@@ -822,11 +826,65 @@ private:
         return std::make_unique<initializer_expression>(expression_start, ret_t, std::move(es));
     }
 
+    template<typename F>
+    void parse_attribute(F&& f) {
+        EXPECT(lparen);
+        EXPECT(lparen);
+        for (;;) {
+            if (current().type() != token_type::id) {
+                NOT_IMPLEMENTED("__attribute__ " << current());
+            }
+            auto attr = current().text();
+            next();
+            if (attr.size() > 4 && attr[0] == '_' && attr[1] == '_' && attr[attr.size() - 2] == '_' &&
+                attr[attr.size() - 1] == '_') {
+                // "__attr__" -> "attr"
+                attr.erase(attr.begin() + attr.size() - 2, attr.end());
+                attr.erase(attr.begin(), attr.begin() + 2);
+            }
+            bool ignored = true;
+            if (attr == "nothrow" || attr == "returns_twice" || attr == "noreturn") {
+            } else if (attr == "format") {
+                EXPECT(lparen);
+                EXPECT(id); // archetype
+                EXPECT(comma);
+                EXPECT(const_int); // string-index
+                EXPECT(comma);
+                EXPECT(const_int); // first-to-check
+                EXPECT(rparen);
+            } else if (attr == "nonnull") {
+                EXPECT(lparen);
+                for (;;) {
+                    EXPECT(const_int);
+                    if (current().type() != token_type::comma) {
+                        break;
+                    }
+                    next();
+                }
+                EXPECT(rparen);
+            } else {
+                ignored = false;
+                f(attr);
+            }
+            if (ignored) {
+                std::cerr << current_source_pos_ << ": ignoring __attribute__ " << attr << "\n";
+            }
+            if (current().type() != token_type::comma) {
+                break;
+            }
+            next();
+        }
+        EXPECT(rparen);
+        EXPECT(rparen);
+    }
+
     std::shared_ptr<type> parse_declaration_specifiers() {
         auto res_type = std::make_shared<type>();
         int long_ = 0;
         int int_  = 0;
         int sign  = -1;
+        size_t aligned = 0;
+        bool defined_here = false;
 
         for (bool stop = false; !stop;) {
             const auto t = current().type();
@@ -885,16 +943,17 @@ private:
 
             if (t == token_type::__attribute___) {
                 next();
-                EXPECT(lparen);
-                EXPECT(lparen);
-                if (current().type() != token_type::id) {
-                    NOT_IMPLEMENTED("__attribute__ " << current());
-                }
-                const auto id = current().text();
-                next();
-                EXPECT(rparen);
-                EXPECT(rparen);
-                std::cerr << "Ignoring __attribute__((" << id << "))\n";
+                parse_attribute([&](const std::string& attr) {
+                    if (attr == "aligned") {
+                        EXPECT(lparen);
+                        const auto ce = parse_constant_expression();
+                        EXPECT(rparen);
+                        if (aligned) NOT_IMPLEMENTED("__attribute__ aligned specified twice " << aligned << " and " << *ce);
+                        aligned = const_int_eval(*ce).val;
+                    } else {
+                        NOT_IMPLEMENTED("__attribute__ " << attr);
+                    }
+                });
                 continue;
             }
 
@@ -967,6 +1026,7 @@ private:
                         }
                     }
                     EXPECT(rbrace);
+                    defined_here = true;
                 } else if (id.empty()) {
                     NOT_IMPLEMENTED(current());
                 }
@@ -995,6 +1055,25 @@ private:
 
         if (sign == 0) {
             res_type->add_flags(ctype::unsigned_f);
+        }
+
+        if (aligned) {
+            if (res_type->base() == ctype::struct_t) {
+                if (res_type->struct_val().align() < aligned) {
+                    if (defined_here) {
+                        // Struct was defined here, OK to increase alignment
+                        auto& si = const_cast<struct_info&>(res_type->struct_val());
+                        std::cerr << *res_type << " before align " << si.align() << " size " << si.size() << "\n";
+                        si.align_ = aligned;
+                        si.size_ = round_up(si.size_, si.align_);
+                        std::cerr << *res_type << " after align " << si.align() << " size " << si.size() << "\n";
+                    } else {
+                        NOT_IMPLEMENTED("TODO: Create copy of " << *res_type << " with align " << aligned);
+                    }
+                }
+            } else {
+                NOT_IMPLEMENTED(*res_type << " aligned " << aligned);
+            }
         }
 
         if (!long_ && !int_ && res_type->base() != ctype::none && (sign == -1 || is_integral(res_type->base()))) {
@@ -1034,6 +1113,15 @@ private:
         NOT_IMPLEMENTED(*res_type << ", long: " << long_ << " int: " << int_ << " sign: " << sign << " current: " << current());
     }
 
+    void ignore_attributes() {
+        while (current().type() == token_type::__attribute___) {
+            next();
+            parse_attribute([&](const std::string& attr) {
+                NOT_IMPLEMENTED(attr);
+            });
+        }
+    }
+
     decl parse_declarator(std::shared_ptr<const type> t) {
         // '*' type-qualifier-list? pointer?
         const auto storage_flags = t->ct() & ctype::storage_f;
@@ -1048,6 +1136,7 @@ private:
             pointee->remove_flags(ctype::storage_f);
             t = make_ptr_t(pointee, flags);
         }
+        ignore_attributes();
         return parse_direct_declarator(t);
     }
 
@@ -1099,6 +1188,7 @@ private:
                 return_type->remove_flags(ctype::storage_f);
                 auto fi = parse_parameter_type_list(std::move(return_type));
                 EXPECT(rparen);
+                ignore_attributes();
                 t = std::make_shared<type>(ctype::function_t | storage_flags, std::move(fi));
             } else {
                 break;

@@ -542,6 +542,9 @@ constexpr const memory_ref_sib ref_RCX{reg_name::RCX, reg_name::NONE, 1, 0};
 constexpr const memory_ref_sib ref_RAX_RCX{reg_name::RAX, reg_name::RCX, 1, 0};
 constexpr const memory_ref_sib ref_RSP{reg_name::RSP, reg_name::NONE, 1, 0};
 
+bool check_extern_symbol(const symbol& s);
+void output_extra(void);
+
 class test_visitor {
 public:
     explicit test_visitor() {}
@@ -564,7 +567,11 @@ public:
             }
 
             if (!s->definition() && (!!(dt->ct() & ctype::extern_f) || dt->base() == ctype::function_t)) {
-                add_extern(*s);
+                if (check_extern_symbol(*s)) {
+                    add_extern(*s);
+                } else {
+                    syms_.push_back(sym_info{s.get(), 0});
+                }
             } else {
                 if (!(dt->ct() & ctype::static_f)) {
                     emit_global_decl(s->id());
@@ -585,6 +592,8 @@ public:
                 handle_global_data(*s);
             }
         }
+
+        output_extra();
 
         if (!string_literals_.empty()) {
             emit_section_change("rodata");
@@ -615,6 +624,7 @@ public:
     //
     // Expression
     //
+
     void operator()(const identifier_expression& e) {
         const auto& si = find_sym(e.sym());
         NEXT_COMMENT(e.sym().id());
@@ -1387,6 +1397,33 @@ private:
         NOT_IMPLEMENTED(e);
     }
 
+    std::string const_ptr_eval(const type& t, const expression& e) {
+        if (auto sl = dynamic_cast<const string_lit_expression*>(&e)) {
+            if (sizeof_type(*t.pointer_val()) != 1) {
+                NOT_IMPLEMENTED(t << " " << e);
+            }
+            return add_string_lit(sl->text());
+        } else if (auto ce = dynamic_cast<const cast_expression*>(&e)) {
+            if (ce->et()->base() != ctype::pointer_t) {
+                NOT_IMPLEMENTED(e << " : " << *ce->et());
+            }
+            return const_ptr_eval(t, ce->e());
+        } else if (auto pe = dynamic_cast<const prefix_expression*>(&e)) {
+            if (pe->op() == token_type::and_) {
+                if (auto ie = dynamic_cast<const identifier_expression*>(&pe->e())) {
+                    const auto& si = find_sym(ie->sym());
+                    if (!si.offset) {
+                        return /*"OFFSET " + */name_mangle(si.sym->id());
+                    }
+                }
+            }
+            NOT_IMPLEMENTED(*pe);
+        }
+        std::ostringstream oss;
+        oss << const_int_eval(e);
+        return oss.str();
+    }
+
     void emit_initializer(const type& t, const expression& init) {
         if (t.base() == ctype::array_t) {
            const auto& av = t.array_val();
@@ -1445,20 +1482,7 @@ private:
             }
             return;
         } else if (t.base() == ctype::pointer_t) {
-            const auto decl = data_decl(t.ct());
-            if (auto sl = dynamic_cast<const string_lit_expression*>(&init)) {
-                if (sizeof_type(*t.pointer_val()) != 1) {
-                    NOT_IMPLEMENTED(t << " " << init);
-                }
-                emit(decl, add_string_lit(sl->text()));
-                return;
-            } else if (auto ce = dynamic_cast<const cast_expression*>(&init); ce && ce->et()->base() == ctype::pointer_t) {
-                // HACK HACK
-                const auto ival = const_int_eval(ce->e());
-                emit(decl, ival);
-                return;
-            }
-            emit(decl, const_int_eval(init).val);
+            emit(data_decl(t.ct()), const_ptr_eval(t, init));
             return;
         } else if (is_floating_point(t.base())) {
             emit_double_decl(const_double_eval(init));
@@ -1718,10 +1742,73 @@ private:
     }
 };
 
+bool need_setjmp = false;
+
+bool check_extern_symbol(const symbol& s) {
+    if (s.id() == "setjmp" || s.id() == "longjmp") {
+        need_setjmp = true;
+        return false;
+    }
+    return true;
+}
+
+const char* const setjmp_h = R"(
+#ifndef _SETJMP_H
+#define _SETJMP_H
+typedef __attribute__((__aligned__(16))) struct {
+    unsigned long long regs[34];
+} _Jump_buffer;
+typedef _Jump_buffer jmp_buf[1];
+
+extern int setjmp(jmp_buf _Buf);
+extern void longjmp(jmp_buf _Buf, int _Value);
+#endif
+)";
+
+void output_extra() {
+    if (need_setjmp) {
+        // wastefull, but blah
+        auto mov16 = [](reg_type t, int off, bool store) {
+            for (int i = 0; i < 16; ++i) {
+                const auto mem = reg_off_str(reg_name::RCX, off + i * 8);
+                const auto r = reg{static_cast<reg_name>(i), t};
+                const auto inst = t == reg_type::x ? "MOVSD" : "MOV";
+                if (store) emit(inst, mem, r);
+                else emit(inst, r, mem);
+            }
+        };
+        auto mov32 = [&mov16](bool store) {
+            mov16(reg_type::q, 0, store);
+            mov16(reg_type::x, 16 * 8, store);
+        };
+        const auto rax_off = reg_off_str(reg_name::RCX, 0);
+        const auto rsp_off = reg_off_str(reg_name::RCX, 32 * 8);
+        const auto rip_off = reg_off_str(reg_name::RCX, 33 * 8);
+        emit_section_change("text");
+        emit_label("setjmp");
+        mov32(true);
+        emit("LEA", RAX, reg_off_str(reg_name::RSP, 8));
+        emit("MOV", rsp_off, RAX);
+        emit("MOV", RAX, reg_off_str(reg_name::RSP, 0));
+        emit("MOV", rip_off, RAX);
+        emit("XOR", EAX, EAX);
+        emit("RET");
+        emit_label("longjmp");
+        emit("MOV", rax_off, RDX);
+        mov32(false);
+        emit("MOV", RSP, rsp_off);
+        emit("MOV", RAX, rip_off);
+        emit("PUSH", RAX);
+        emit("MOV", RAX, rax_off);
+        emit("RET");
+    }
+}
+
 void process_one(source_manager& sm, const std::string& filename) {
     test_visitor vis{};
     std::cerr << "Parsing " << filename << "\n";
     const auto pr = parse(sm, sm.load(filename));
+    //for (const auto& d: pr.decls()) { std::cerr << *d << "\n\n"; }
     std::cerr << "Generating code...\n";
     vis.do_all(pr);
 }
@@ -1751,6 +1838,7 @@ int main(int argc, char* argv[]) {
         sm.define_standard_headers("x86intrin.h", "");
         sm.define_standard_headers("emmintrin.h", "");
         sm.define_standard_headers("psdk_inc/intrin-impl.h", "");
+        sm.define_standard_headers("setjmp.h", setjmp_h);
 
         for (const auto& f: files) {
             process_one(sm, f);

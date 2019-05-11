@@ -664,6 +664,16 @@ private:
             LEX_ERROR("Invalid redefinition of macro " << id);
         }
 
+        if (id == "__attribute__") {
+            // HACK: Don't allow _mingw.h to define __attribute__ ...
+            auto fn = position().source().name();
+            if (auto idx = fn.find_last_of('/'); idx != std::string::npos) fn = fn.substr(idx+1);
+            if (fn == "_mingw.h") {
+                return;
+            }
+            LEX_ERROR(fn);
+        }
+
         defines_[id] = macro_definition{params, replacement};
     }
 
@@ -1235,7 +1245,7 @@ typedef long long __int64;
 
 #define __CRT__NO_INLINE // don't want inline asm
 #define _CONST_RETURN
-#define _CRT_ALIGN(n)
+#define _CRT_ALIGN(x) __attribute__ ((__aligned__ (x)))
 
 #define __has_builtin(x) 0
 
