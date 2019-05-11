@@ -1030,9 +1030,6 @@ public:
             if (!switches_) NOT_IMPLEMENTED("case outside switch");
             assert(break_labels_);
             switches_->add_case(v, l);
-            handle(s.s());
-            emit("JMP", break_labels_->label());
-            return;
         } else if (s.is_default_label()) {
             const auto l = make_label();
             NEXT_COMMENT("default");
@@ -1040,18 +1037,14 @@ public:
             if (!switches_) NOT_IMPLEMENTED("default outside switch");
             assert(break_labels_);
             switches_->add_default(l);
-            handle(s.s());
-            emit("JMP", break_labels_->label());
-            return;
         } else {
             assert(s.is_normal_label());
             const auto& id = s.label().id();
             NEXT_COMMENT(id);
             assert(local_labels_.find(id) != local_labels_.end());
             emit_label(local_labels_[id]);
-            handle(s.s());
-            return;
         }
+        handle(s.s());
     }
     void operator()(const compound_statement& s) {
         for (const auto& s2: s.ss()) {
