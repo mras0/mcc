@@ -711,6 +711,9 @@ public:
             stack_adj_size = stack_adj_size + round_up(sizeof_type(*t), 8);
         }
         stack_adj_size = round_up(std::max(32ULL, stack_adj_size), 16);
+        emit("PUSH", RBX);
+        emit("MOV", RBX, RSP);   // Store old stack pointer in RBX
+        emit("AND", RSP, "-16"); // Ensure stack is aligned
         emit("SUB", RSP, stack_adj_size);
 
         for (size_t i = e.args().size(); i--; ) {
@@ -740,7 +743,8 @@ public:
             }
         }
         emit("CALL", RAX);
-        emit("ADD", RSP, stack_adj_size);
+        emit("MOV", RSP, RBX);
+        emit("POP", RBX);
     }
     void operator()(const access_expression& e) {
         if (e.op() == token_type::arrow) {
@@ -874,7 +878,7 @@ public:
             inst = "UCOMI";
         } else {
             inst = arit_op_name(e.op(), true);
-        }
+        } 
         emit(inst + suffix, XMM0, ref_RSP);
         if (is_comparison_op(e.op())) {
             const auto l = make_label();
@@ -974,11 +978,11 @@ public:
         handle_and_convert(e.cond(), std::make_shared<type>(ctype::bool_t));
         emit("TEST", AL, AL);
         emit("JZ", l_rhs);
-        handle(e.l());
+        handle_and_convert(e.l(), e.et());
         emit("JMP", l_end);
         NEXT_COMMENT("? rhs");
         emit_label(l_rhs);
-        handle(e.r());
+        handle_and_convert(e.r(), e.et());
         NEXT_COMMENT("? end");
         emit_label(l_end);
     }
@@ -1372,6 +1376,17 @@ private:
         emit(".asciz", oss.str());
     }
 
+    double const_double_eval(const expression& e) {
+        if (auto cfe = dynamic_cast<const const_float_expression*>(&e)) {
+            return cfe->val();
+        } else if (auto pe = dynamic_cast<const prefix_expression*>(&e)) {
+            if (pe->op() == token_type::minus) {
+                return -const_double_eval(pe->e());
+            }
+        }
+        NOT_IMPLEMENTED(e);
+    }
+
     void emit_initializer(const type& t, const expression& init) {
         if (t.base() == ctype::array_t) {
            const auto& av = t.array_val();
@@ -1446,11 +1461,7 @@ private:
             emit(decl, const_int_eval(init).val);
             return;
         } else if (is_floating_point(t.base())) {
-            auto cfe = dynamic_cast<const const_float_expression*>(&init);
-            if (!cfe) {
-                NOT_IMPLEMENTED(t << " " << init);
-            }
-            emit_double_decl(cfe->val());
+            emit_double_decl(const_double_eval(init));
             return;
         } else if (!is_integral(t.base())) {
             NOT_IMPLEMENTED(t << " " << init);
@@ -1500,6 +1511,10 @@ private:
                 }
             } else if (rt->base() == ctype::function_t) {
                 if (dst->base() != ctype::pointer_t) {
+                    NOT_IMPLEMENTED("Conversion from " << *rt << " (" << *src << ") to " << *dst);
+                }
+            } else if (rt->base() == ctype::struct_t) {
+                if (dst->base() != ctype::struct_t) {
                     NOT_IMPLEMENTED("Conversion from " << *rt << " (" << *src << ") to " << *dst);
                 }
             } else {
