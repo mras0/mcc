@@ -15,17 +15,22 @@ std::string_view base_name(const std::string_view base_dir, const std::string& f
     return fn;
 }
 
-std::ostream& operator<<(std::ostream& os, const source_position& pos) {
-    int line = 1;
+source_extend source_position::extend() const {
+    size_t line = 1;
     size_t last_line = 0;
-    const auto& t = pos.source().text();
-    for (size_t i = 0; i < pos.index(); ++i) {
+    const auto& t = source_->text();
+    for (size_t i = 0; i < index_; ++i) {
         if (t[i] == '\n') {
             ++line;
             last_line = i;
         }
     }
-    return os << pos.source().name() << ":" << line << ":" << pos.index()-last_line << "-" << pos.index()+pos.length()-last_line;
+    return {line, index_-last_line, index_+len_-last_line};
+};
+
+std::ostream& operator<<(std::ostream& os, const source_position& pos) {
+    const auto ext = pos.extend();
+    return os << pos.source().name() << ":" << ext.line << ":" << ext.col_start << "-" << ext.col_end;
 }
 
 std::string read_file(const std::string& p) {

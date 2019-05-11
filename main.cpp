@@ -240,6 +240,8 @@ ELFW(ST_INFO)(sym_bind, ELFW(ST_TYPE)(esym->st_info));
 typedef RPC_CALL_ATTRIBUTES_V1 RPC_CALL_ATTRIBUTES;
 )", {  PP_ID(typedef), PP_ID(RPC_CALL_ATTRIBUTES_V1_A), PP_ID(RPC_CALL_ATTRIBUTES), PP_PUNCT(";") } },
     { "#define __inline inline\n#define inline __inline\ninline\n", { PP_ID(inline) } },
+    { "__FILE__ __LINE__", { PP_STR("test"), PP_NUM(1) } },
+    //{ "__DATE__ __TIME__", { PP_STR("MMM DD YYYY"), PP_STR("HH:MM:SS") } },
     };
 
     const char* delim = "-----------------------------------\n";
@@ -446,6 +448,26 @@ void emit_copy(size_t sz) {
         emit("REP", "MOVS" + suffix);
     } else {
         emit("MOVS" + suffix);
+    }
+}
+
+void emit_const_mul(size_t n, bool is_unsigned) {
+    if (n == 0) {
+        NOT_IMPLEMENTED(n << " " << is_unsigned);
+    } else if (n == 1) {
+        return;
+    }
+    
+    NEXT_COMMENT("scale by " << n << " " << (is_unsigned ? "un": "") << "signed");
+    if ((n & (n - 1)) == 0) {
+        int s = 1;
+        while (1ULL << s < n) ++s;
+        emit("SHL", RAX, s);
+    } else {
+        emit("PUSH", RDX);
+        emit("MOV", RDX, n);
+        emit(is_unsigned ? "MUL" : "IMUL", RDX);
+        emit("POP", RDX);
     }
 }
 
@@ -1575,15 +1597,13 @@ private:
         }
 
         if (dst->base() == ctype::pointer_t && is_integral(src->base())) {
+            bool is_unsigned = unsigned_arit(src->ct());
             if (src->base() < ctype::long_long_t) {
-                extend_int(true);
+                extend_int(is_unsigned);
             }
             // Must be pointer arithmetic
             if (scale_pointers) {
-                const auto element_size = sizeof_type(*dst->pointer_val());
-                if (element_size > 1) {
-                    emit("IMUL", RAX, element_size);
-                }
+                emit_const_mul(sizeof_type(*dst->pointer_val()), is_unsigned);
             }
             return;
         }

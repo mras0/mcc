@@ -2,6 +2,8 @@
 #include "util.h"
 
 #include <optional>
+#include <variant>
+#include <functional>
 #include <map>
 #include <cstring>
 
@@ -389,6 +391,27 @@ private:
 class preprocessor::impl {
 public:
     explicit impl(source_manager& sm, const source_file& source) : sm_{sm} {
+        auto make_macro_func = [&](const char* name, auto&& f) {
+            defines_[name] = macro_definition{macro_param_type{std::move(f)}, {}};
+        };
+        auto make_string_macro_func = [&](const char* name, auto&& f) {
+            make_macro_func(name, [f]() -> std::vector<pp_token> {
+                return { pp_token{ pp_token_type::string_literal, quoted(f()) } };
+            });
+        };
+        auto make_number_macro_func = [&](const char* name, auto&& f) {
+            make_macro_func(name, [f]() -> std::vector<pp_token> {
+                return { pp_token{ pp_token_type::number, std::to_string(f()) } };
+            });
+        };
+        make_string_macro_func("__FILE__", [&]() { return position().source().name(); });
+        make_number_macro_func("__LINE__", [&]() { return position().extend().line; });
+        make_string_macro_func("__DATE__", []() -> std::string { NOT_IMPLEMENTED("__DATE__"); });
+        make_string_macro_func("__TIME__", []() -> std::string { NOT_IMPLEMENTED("__TIME__"); });
+        //make_macro_func("__FILE__", [&]() -> std::vector<pp_token> { return pp_token{pp_token_type::string_literal, quoted(position().source().name())}; });
+        //make_macro_func("__LINE__", [&]() -> std::vector<pp_token> { NOT_IMPLEMENTED("__LINE__"); });
+        //make_macro_func("__DATE__", [&]() -> std::vector<pp_token> { NOT_IMPLEMENTED("__DATE__"); });
+        //make_macro_func("__TIME__", [&]() -> std::vector<pp_token> { NOT_IMPLEMENTED("__TIME__"); });
         files_.push_back(std::make_unique<pp_lexer>(source));
         files_.push_back(std::make_unique<pp_lexer>(sm.builtin()));
         next();
@@ -459,8 +482,9 @@ public:
     }
 
 private:
+    using macro_param_type = std::variant<std::monostate, std::vector<std::string>, std::function<std::vector<pp_token>()>>;
     struct macro_definition {
-        std::optional<std::vector<std::string>> params;
+        macro_param_type params;
         std::vector<pp_token> replacement;
     };
     struct conditional {
@@ -658,8 +682,14 @@ private:
 
         auto it = defines_.find(id);
         if (it != defines_.end()) {
-            if (it->second.params == params && it->second.replacement == replacement) {
-                return;
+            if (it->second.replacement == replacement) {
+                if (params) {
+                    if (it->second.params.index() == 1 && *params == std::get<1>(it->second.params)) {
+                        return;
+                    }
+                } else if (it->second.params.index() == 0) {
+                    return;
+                }
             }
             LEX_ERROR("Invalid redefinition of macro " << id);
         }
@@ -674,7 +704,7 @@ private:
             LEX_ERROR(fn);
         }
 
-        defines_[id] = macro_definition{params, replacement};
+        defines_[id] = macro_definition{params ? macro_param_type{*params} : macro_param_type{}, replacement};
     }
 
     void handle_undef() {
@@ -932,9 +962,16 @@ private:
 #ifdef PP_DEBUG
         std::cout << "Expanding " << macro_id << "\n";
 #endif
+        if (def.params.index() == 2) {
+            return std::get<2>(def.params)();
+        }
+
         std::vector<pp_token> replacement;
-        if (def.params) {
+
+        if (def.params.index() == 1) {
             // Function-like macro
+            const auto& params = std::get<1>(def.params);
+
             ts.skip_whitespace();
             if (ts.current().type() != pp_token_type::punctuation || ts.current().text() != "(") {
                 // Not an invocation
@@ -942,7 +979,7 @@ private:
             }
             ts.next();
 
-            const bool is_variadic = !def.params->empty() && def.params->back() == variadic_arg_name;
+            const bool is_variadic = !params.empty() && params.back() == variadic_arg_name;
             std::vector<std::vector<pp_token>> args;
             std::vector<pp_token> current_arg;
             for (int nest = 1; ts.current(); ts.next()) {
@@ -953,7 +990,7 @@ private:
                         ++nest;
                     } else if (t.text() == ")") {
                         if (--nest == 0) {
-                            if (!def.params->empty()) {
+                            if (!params.empty()) {
                                 args.push_back(std::move(current_arg));
                             }
                             break;
@@ -972,7 +1009,7 @@ private:
             ts.next();
 
             if (is_variadic) {
-                const auto psize = def.params->size();
+                const auto psize = params.size();
                 if (args.size() == psize - 1) {
                     args.push_back({});
                 } else if (args.size() > psize) {
@@ -984,8 +1021,8 @@ private:
                 }
             }
 
-            if (args.size() != def.params->size()) {
-                LEX_ERROR("Invalid number of arguments to macro got " << args.size() << " expecting " << def.params->size() << " for macro " << macro_id);
+            if (args.size() != params.size()) {
+                LEX_ERROR("Invalid number of arguments to macro got " << args.size() << " expecting " << params.size() << " for macro " << macro_id);
             }
 
             enum { combine_none, combine_str, combine_paste } combine_state = combine_none;
@@ -1007,9 +1044,9 @@ private:
                         continue;
                     }
                 } else if (t.type() == pp_token_type::identifier) {
-                    auto it = std::find(def.params->begin(), def.params->end(), t.text());
-                    if (it != def.params->end()) {
-                        const auto ai = std::distance(def.params->begin(), it);
+                    auto it = std::find(params.begin(), params.end(), t.text());
+                    if (it != params.end()) {
+                        const auto ai = std::distance(params.begin(), it);
                         auto nts = args[ai];
 
                         if (combine_state == combine_str) {
@@ -1066,7 +1103,7 @@ private:
                 }
             }
         }
-        return do_replace(replacement, macro_id, !!def.params, ts);
+        return do_replace(replacement, macro_id, def.params.index() == 1, ts);
     }
 
     pp_number eval_primary() {

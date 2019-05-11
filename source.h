@@ -22,6 +22,12 @@ private:
     std::string text_;
 };
 
+struct source_extend {
+    size_t line;
+    size_t col_start;
+    size_t col_end;
+};
+
 class source_position {
 public:
     explicit source_position(const source_file& source, size_t index, size_t len) : source_{&source}, index_{index}, len_{len} {
@@ -31,6 +37,8 @@ public:
     const source_file& source() const { return *source_; }
     size_t index() const { return index_; }
     size_t length() const { return len_; }
+
+    source_extend extend() const;
 
 private:
     const source_file* source_;

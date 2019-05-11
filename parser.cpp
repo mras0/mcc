@@ -878,6 +878,13 @@ private:
         EXPECT(rparen);
     }
 
+    size_t parse_attribute_aligned() {
+        EXPECT(lparen);
+        const auto ce = parse_constant_expression();
+        EXPECT(rparen);
+        return const_int_eval(*ce).val;
+    }
+
     std::shared_ptr<type> parse_declaration_specifiers() {
         auto res_type = std::make_shared<type>();
         int long_ = 0;
@@ -945,11 +952,8 @@ private:
                 next();
                 parse_attribute([&](const std::string& attr) {
                     if (attr == "aligned") {
-                        EXPECT(lparen);
-                        const auto ce = parse_constant_expression();
-                        EXPECT(rparen);
-                        if (aligned) NOT_IMPLEMENTED("__attribute__ aligned specified twice " << aligned << " and " << *ce);
-                        aligned = const_int_eval(*ce).val;
+                        if (aligned) NOT_IMPLEMENTED("__attribute__ aligned specified before as " << aligned);
+                        aligned = parse_attribute_aligned();
                     } else {
                         NOT_IMPLEMENTED("__attribute__ " << attr);
                     }
@@ -1063,10 +1067,8 @@ private:
                     if (defined_here) {
                         // Struct was defined here, OK to increase alignment
                         auto& si = const_cast<struct_info&>(res_type->struct_val());
-                        std::cerr << *res_type << " before align " << si.align() << " size " << si.size() << "\n";
                         si.align_ = aligned;
                         si.size_ = round_up(si.size_, si.align_);
-                        std::cerr << *res_type << " after align " << si.align() << " size " << si.size() << "\n";
                     } else {
                         NOT_IMPLEMENTED("TODO: Create copy of " << *res_type << " with align " << aligned);
                     }
@@ -1256,13 +1258,25 @@ private:
         size_t size = 0;
         size_t max_align = 1, max_size = 0;
         while (current().type() != token_type::rbrace) {
+            size_t aligned = 0;
+            if (current().type() == token_type::__attribute___) {
+                next();
+                parse_attribute([&](const std::string& attr) {
+                    if (attr == "aligned") {
+                        if (aligned) NOT_IMPLEMENTED("__attribute__ aligned specified before as " << aligned);
+                        aligned = parse_attribute_aligned();
+                    } else {
+                        NOT_IMPLEMENTED(attr);
+                    }
+                });
+            }
             auto ds = parse_declaration(true);
             for (auto& d: ds) {
                 if (d->has_init_val()) {
                     NOT_IMPLEMENTED(*d);
                 }
                 add_names(names, d->d());
-                const auto a = alignof_type(*d->d().t());
+                const auto a = std::max(aligned, alignof_type(*d->d().t()));
                 const auto pos = round_up(size, a);
                 const auto s = sizeof_type(*d->d().t());
                 if (!is_union) size = pos + s;
