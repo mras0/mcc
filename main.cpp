@@ -1169,9 +1169,10 @@ public:
     void operator()(const for_statement& s) {
         handle(s.init());
         const auto l_start = make_label();
+        const auto l_iter  = make_label();
         const auto l_end   = make_label();
         label_stack_node bl{break_labels_, l_end};
-        label_stack_node cl{continue_labels_, l_end};
+        label_stack_node cl{continue_labels_, l_iter};
         NEXT_COMMENT("for cond");
         emit_label(l_start);
         if (s.cond()) {
@@ -1181,8 +1182,9 @@ public:
         }
         NEXT_COMMENT("for body");
         handle(s.body());
+        emit_label(l_iter);
+        NEXT_COMMENT("for iter");
         if (s.iter()) {
-            NEXT_COMMENT("for iter");
             handle(*s.iter());
         }
         emit("JMP", l_start);
